@@ -1,5 +1,4 @@
 import Foundation
-import SwiftCrossUI
 
 /// 类似 SwiftData 的 ModelContainer，管理数据存储和 ModelContext 的生命周期
 public final class ModelContainer: @unchecked Sendable {
@@ -25,22 +24,5 @@ public final class ModelContainer: @unchecked Sendable {
     public init(for types: [any PersistentModel.Type], at url: URL) {
         self.schema = types
         self.mainContext = ModelContext(url: url)
-    }
-}
-
-// MARK: - View modifier
-
-extension SwiftCrossUI.View {
-    /// 将 ModelContainer 注入到视图层级的环境中，
-    /// 使子视图可以通过 @Environment(\.modelContext) 获取 ModelContext
-    ///
-    /// 用法：
-    /// ```swift
-    /// let container = ModelContainer(for: TaskInfo.self)
-    /// // 在 App 层级持有 container，避免重复创建
-    /// view.modelContainer(container)
-    /// ```
-    public func modelContainer(_ container: ModelContainer) -> some SwiftCrossUI.View {
-        self.environment(\.modelContext, container.mainContext)
     }
 }

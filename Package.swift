@@ -12,7 +12,6 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "601.0.0"),
-        .package(url: "https://github.com/stackotter/swift-cross-ui.git", branch: "main")
     ],
     targets: [
         .macro(
@@ -26,7 +25,6 @@ let package = Package(
             name: "JsonData",
             dependencies: [
                 "JsonDataMacros",
-                .product(name: "SwiftCrossUI", package: "swift-cross-ui")
             ]
         )
     ]

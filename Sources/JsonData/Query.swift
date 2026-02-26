@@ -2,26 +2,30 @@ import SwiftCrossUI
 import Foundation
 
 @MainActor
-public final class QueryResult<T: JsonModel>: SwiftCrossUI.ObservableObject {
+public final class QueryResult<T: PersistentModel>: SwiftCrossUI.ObservableObject {
     @SwiftCrossUI.Published public var items: [T] = []
+    private var descriptor: FetchDescriptor<T>
     
-    public init() {
-        self.items = ModelContext.shared.fetch()
+    public init(descriptor: FetchDescriptor<T>) {
+        self.descriptor = descriptor
+        self.items = (try? ModelContext.shared.fetch(descriptor)) ?? []
         NotificationCenter.default.addObserver(forName: ModelContext.contextDidChange, object: nil, queue: .main) { [weak self] _ in
+            guard let self = self else { return }
             Task { @MainActor in
-                self?.items = ModelContext.shared.fetch()
+                self.items = (try? ModelContext.shared.fetch(self.descriptor)) ?? []
             }
         }
     }
 }
 
 @propertyWrapper
-public struct Query<Element: JsonModel>: ObservableProperty {
+public struct Query<Element: PersistentModel>: ObservableProperty {
     @State private var result: QueryResult<Element>
     
     @MainActor
-    public init() {
-        self._result = State(wrappedValue: QueryResult<Element>())
+    public init(filter: ((Element) -> Bool)? = nil, sort: [SortDescriptor<Element>] = []) {
+        let descriptor = FetchDescriptor<Element>(sortBy: sort, predicate: filter)
+        self._result = State(wrappedValue: QueryResult<Element>(descriptor: descriptor))
     }
     
     @MainActor

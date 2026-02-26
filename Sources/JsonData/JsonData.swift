@@ -1,12 +1,11 @@
 import Foundation
-@_exported import SwiftCrossUI
 
-@attached(extension, conformances: PersistentModel, Codable, SwiftCrossUI.ObservableObject)
+@attached(extension, conformances: PersistentModel, Codable)
 @attached(memberAttribute)
 @attached(member, names: named(_modelContext), named(_isFault), named(_isFaulting), named(didChange), named(fault), named(_copy), named(CodingKeys), named(init), named(persistentModelID))
 public macro Model() = #externalMacro(module: "JsonDataMacros", type: "ModelMacro")
 
-public protocol PersistentModel: AnyObject, SwiftCrossUI.ObservableObject, Codable {
+public protocol PersistentModel: AnyObject, Codable {
     var persistentModelID: String { get set }
     var _modelContext: ModelContext? { get set }
     var _isFault: Bool { get set }
@@ -37,17 +36,6 @@ public struct FetchDescriptor<T: PersistentModel> {
     public init(sortBy: [SortDescriptor<T>] = [], predicate: ((T) -> Bool)? = nil) {
         self.sortBy = sortBy
         self.predicate = predicate
-    }
-}
-
-struct ModelContextEnvironmentKey: SwiftCrossUI.EnvironmentKey {
-    static let defaultValue: ModelContext = ModelContext.shared
-}
-
-extension SwiftCrossUI.EnvironmentValues {
-    public var modelContext: ModelContext {
-        get { self[ModelContextEnvironmentKey.self] }
-        set { self[ModelContextEnvironmentKey.self] = newValue }
     }
 }
 
@@ -97,7 +85,6 @@ public struct Field<Value: Codable>: Codable {
             instance[keyPath: storageKeyPath].value = newValue
             
             if !instance._isFaulting {
-                instance.didChange.send() 
                 instance._modelContext?._save(instance)
             }
         }

@@ -12,7 +12,7 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
         in context: some MacroExpansionContext
     ) throws -> [ExtensionDeclSyntax] {
         let decl: DeclSyntax = """
-        extension \(type.trimmed): PersistentModel, SwiftCrossUI.ObservableObject, Codable {}
+        extension \(type.trimmed): PersistentModel, Codable {}
         """
         guard let extensionDecl = decl.as(ExtensionDeclSyntax.self) else {
             return []

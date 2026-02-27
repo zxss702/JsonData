@@ -64,7 +64,6 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
             "public weak var _modelContext: ModelContext? = nil",
             "public var _isFault: Bool = false",
             "public var _isFaulting: Bool = false",
-            "public let didChange = SwiftCrossUI.Publisher()",
             """
             public func fault() {
                 if _isFault {

@@ -85,12 +85,19 @@ public final class ModelContext: @unchecked Sendable {
     
     // MARK: - Fetch（扫描 + 筛选 + 排序）
     
-    public func fetch<T: PersistentModel>(_ descriptor: FetchDescriptor<T> = FetchDescriptor<T>()) throws -> [T] {
+    public func fetch<T: PersistentModel>(
+        _ descriptor: FetchDescriptor<T> = FetchDescriptor<T>(),
+        limit: Int? = nil
+    ) throws -> [T] {
+        if let limit = limit, limit <= 0 {
+            return []
+        }
         let typeName = String(describing: T.self)
         let dir = baseURL.appendingPathComponent(typeName)
         guard let files = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return [] }
         
         var results: [T] = []
+        var reachedLimit = false
         
         identityMapLock.lock()
         _purgeStaleEntries()
@@ -135,9 +142,18 @@ public final class ModelContext: @unchecked Sendable {
                     results.append(fault)
                 }
             }
+
+            if let limit = limit, results.count >= limit {
+                reachedLimit = true
+                break
+            }
         }
         
         identityMapLock.unlock()
+
+        if reachedLimit {
+            return results
+        }
         
         // 3. 排序（访问排序属性会触发 fault 按需加载）
         for sortDesc in descriptor.sortBy.reversed() {

@@ -172,6 +172,38 @@ public final class ModelContext: @unchecked Sendable {
         return results
     }
     
+    // MARK: - 通过 persistentModelID 获取单个模型
+    
+    /// 根据 persistentModelID 获取对应的模型对象
+    /// - Parameter id: 模型的 persistentModelID（UUID 字符串）
+    /// - Returns: 对应的模型对象，若不存在则返回 nil
+    public func model<T: PersistentModel>(for id: String) -> T? {
+        identityMapLock.lock()
+        defer { identityMapLock.unlock() }
+        
+        // 1. 先查 Identity Map 缓存
+        if let ref = identityMap[id], let cached = ref.value as? T {
+            return cached
+        }
+        
+        // 2. 缓存未命中，从磁盘读取
+        let typeName = String(describing: T.self)
+        let fileURL = baseURL
+            .appendingPathComponent(typeName)
+            .appendingPathComponent("\(id).json")
+        
+        guard FileManager.default.fileExists(atPath: fileURL.path),
+              let data = try? Data(contentsOf: fileURL),
+              let model = try? JSONDecoder().decode(T.self, from: data) else {
+            return nil
+        }
+        
+        model._modelContext = self
+        model._isFault = false
+        identityMap[id] = WeakRef(model)
+        return model
+    }
+    
     // MARK: - Faulting
     
     public func _faultIn<T: PersistentModel>(_ model: T) {

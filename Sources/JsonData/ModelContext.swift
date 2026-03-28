@@ -1,5 +1,6 @@
 import Foundation
 
+#if !canImport(SwiftData)
 /// 弱引用包装器，用于 Identity Map 中持有模型对象
 private class WeakRef {
     weak var value: (any PersistentModel)?
@@ -89,7 +90,8 @@ public final class ModelContext: @unchecked Sendable {
         _ descriptor: FetchDescriptor<T> = FetchDescriptor<T>(),
         limit: Int? = nil
     ) throws -> [T] {
-        if let limit = limit, limit <= 0 {
+        let effectiveLimit = descriptor.fetchLimit ?? limit
+        if let effectiveLimit, effectiveLimit <= 0 {
             return []
         }
         let typeName = String(describing: T.self)
@@ -97,7 +99,6 @@ public final class ModelContext: @unchecked Sendable {
         guard let files = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return [] }
         
         var results: [T] = []
-        var reachedLimit = false
         
         identityMapLock.lock()
         _purgeStaleEntries()
@@ -109,8 +110,7 @@ public final class ModelContext: @unchecked Sendable {
             if let ref = identityMap[id], let cached = ref.value as? T {
                 // 已有缓存对象
                 if let predicate = descriptor.predicate {
-                    // 有筛选条件：访问属性会触发 fault，仅通过的才加入结果
-                    if predicate(cached) {
+                    if try predicate.evaluate(cached) {
                         results.append(cached)
                     }
                 } else {
@@ -119,12 +119,11 @@ public final class ModelContext: @unchecked Sendable {
             } else {
                 // 2. 缓存未命中
                 if let predicate = descriptor.predicate {
-                    // 有筛选条件：临时解析 JSON 判断是否通过
                     let fileURL = dir.appendingPathComponent(file)
                     guard let data = try? Data(contentsOf: fileURL),
                           let parsed = try? JSONDecoder().decode(T.self, from: data) else { continue }
                     
-                    if predicate(parsed) {
+                    if try predicate.evaluate(parsed) {
                         // 通过筛选，存入 Identity Map 作为已加载对象
                         parsed._modelContext = self
                         parsed._isFault = false
@@ -142,31 +141,20 @@ public final class ModelContext: @unchecked Sendable {
                     results.append(fault)
                 }
             }
-
-            if let limit = limit, results.count >= limit {
-                reachedLimit = true
-                break
-            }
         }
         
         identityMapLock.unlock()
-
-        if reachedLimit {
-            return results
-        }
         
-        // 3. 排序（访问排序属性会触发 fault 按需加载）
-        for sortDesc in descriptor.sortBy.reversed() {
-            results.sort { a, b in
-                let lhs = a[keyPath: sortDesc.keyPath]
-                let rhs = b[keyPath: sortDesc.keyPath]
-                
-                // 尝试使用 Comparable 进行比较
-                if let lhs = lhs as? any Comparable, let rhs = rhs as? any Comparable {
-                    return _compare(lhs, rhs, order: sortDesc.order)
-                }
-                return false
-            }
+        if !descriptor.sortBy.isEmpty {
+            results.sort(using: descriptor.sortBy)
+        }
+
+        if let fetchOffset = descriptor.fetchOffset, fetchOffset > 0 {
+            results = Array(results.dropFirst(fetchOffset))
+        }
+
+        if let effectiveLimit {
+            results = Array(results.prefix(effectiveLimit))
         }
         
         return results
@@ -215,16 +203,4 @@ public final class ModelContext: @unchecked Sendable {
         }
     }
 }
-
-// MARK: - 排序比较辅助
-
-private func _compare(_ lhs: any Comparable, _ rhs: any Comparable, order: SortDescriptor<some PersistentModel>.SortOrder) -> Bool {
-    func _cmp<T: Comparable>(_ a: T, _ b: any Comparable) -> Bool {
-        guard let b = b as? T else { return false }
-        switch order {
-        case .forward: return a < b
-        case .reverse: return a > b
-        }
-    }
-    return _cmp(lhs, rhs)
-}
+#endif

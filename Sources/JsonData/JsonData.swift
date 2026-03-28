@@ -1,5 +1,23 @@
 import Foundation
 
+#if canImport(SwiftData)
+@_exported import SwiftData
+
+@available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
+public extension SwiftData.ModelContext {
+    func model<T>(for persistentModelIDString: String) -> T? where T: SwiftData.PersistentModel {
+        let records = try? fetch(SwiftData.FetchDescriptor<T>())
+        return records?.first(where: { "\($0.persistentModelID)" == persistentModelIDString })
+    }
+}
+
+@available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
+public extension SwiftData.ModelContainer {
+    func freshContext() -> SwiftData.ModelContext {
+        SwiftData.ModelContext(self)
+    }
+}
+#else
 @attached(extension, conformances: PersistentModel, Codable)
 @attached(memberAttribute)
 @attached(member, names: named(_modelContext), named(_isFault), named(_isFaulting), named(didChange), named(fault), named(_copy), named(CodingKeys), named(init), named(persistentModelID))
@@ -15,27 +33,25 @@ public protocol PersistentModel: AnyObject, Codable {
     init()
 }
 
-public struct SortDescriptor<T: PersistentModel> {
-    public enum SortOrder {
-        case forward
-        case reverse
-    }
-    public var keyPath: PartialKeyPath<T>
-    public var order: SortOrder
-    
-    public init(_ keyPath: PartialKeyPath<T>, order: SortOrder = .forward) {
-         self.keyPath = keyPath
-         self.order = order
-    }
-}
+public typealias SortDescriptor<T: PersistentModel> = Foundation.SortDescriptor<T>
 
 public struct FetchDescriptor<T: PersistentModel> {
     public var sortBy: [SortDescriptor<T>]
-    public var predicate: ((T) -> Bool)?
+    public var predicate: Predicate<T>?
+    public var fetchLimit: Int?
+    public var fetchOffset: Int?
+    public var includePendingChanges: Bool
+    public var propertiesToFetch: [PartialKeyPath<T>]
+    public var relationshipKeyPathsForPrefetching: [PartialKeyPath<T>]
     
-    public init(sortBy: [SortDescriptor<T>] = [], predicate: ((T) -> Bool)? = nil) {
-        self.sortBy = sortBy
+    public init(predicate: Predicate<T>? = nil, sortBy: [SortDescriptor<T>] = []) {
         self.predicate = predicate
+        self.sortBy = sortBy
+        self.fetchLimit = nil
+        self.fetchOffset = nil
+        self.includePendingChanges = true
+        self.propertiesToFetch = []
+        self.relationshipKeyPathsForPrefetching = []
     }
 }
 
@@ -96,3 +112,10 @@ public struct Field<Value: Codable>: Codable {
         set { fatalError() }
     }
 }
+
+public extension ModelContainer {
+    func freshContext() -> ModelContext {
+        mainContext
+    }
+}
+#endif

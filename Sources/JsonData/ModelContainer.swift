@@ -1,5 +1,6 @@
 import Foundation
 
+#if !canImport(SwiftData)
 /// 类似 SwiftData 的 ModelContainer，管理数据存储和 ModelContext 的生命周期
 public final class ModelContainer: @unchecked Sendable {
     /// 与该容器关联的主上下文
@@ -26,3 +27,4 @@ public final class ModelContainer: @unchecked Sendable {
         self.mainContext = ModelContext(url: url)
     }
 }
+#endif

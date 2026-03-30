@@ -62,3 +62,6 @@ fastlane/screenshots/**/*.png
 fastlane/test_output
 
 .ShengYan Code Edit/snapshot/
+
+.logorythia/lastUserPrompt.txt
+.logorythia/plan.txt

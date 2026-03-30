@@ -12,7 +12,7 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
         in context: some MacroExpansionContext
     ) throws -> [ExtensionDeclSyntax] {
         let decl: DeclSyntax = """
-        extension \(type.trimmed): PersistentModel, Codable {}
+        extension \(type.trimmed): PersistentModel {}
         """
         guard let extensionDecl = decl.as(ExtensionDeclSyntax.self) else {
             return []
@@ -60,10 +60,24 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
         let typeName = declaration.as(ClassDeclSyntax.self)?.name.text ?? "Self"
         
         return [
-            "public var persistentModelID: String = UUID().uuidString",
-            "public weak var _modelContext: ModelContext? = nil",
-            "public var _isFault: Bool = false",
-            "public var _isFaulting: Bool = false",
+            "@ObservationIgnored private let _observationRegistrar = ObservationRegistrar()",
+            "@ObservationIgnored public var persistentModelID: String = UUID().uuidString",
+            "@ObservationIgnored public weak var _modelContext: ModelContext? = nil",
+            "@ObservationIgnored public var _isFault: Bool = false",
+            "@ObservationIgnored public var _isFaulting: Bool = false",
+            """
+            public func access<Member>(keyPath: KeyPath<\(raw: typeName), Member>) {
+                _observationRegistrar.access(self, keyPath: keyPath)
+            }
+            """,
+            """
+            public func withMutation<Member, Result>(
+                keyPath: KeyPath<\(raw: typeName), Member>,
+                _ mutation: () throws -> Result
+            ) rethrows -> Result {
+                try _observationRegistrar.withMutation(of: self, keyPath: keyPath, mutation)
+            }
+            """,
             """
             public func fault() {
                 if _isFault {

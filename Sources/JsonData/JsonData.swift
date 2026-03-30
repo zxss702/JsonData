@@ -18,16 +18,20 @@ public extension SwiftData.ModelContainer {
     }
 }
 #else
-@attached(extension, conformances: PersistentModel, Codable)
+@_exported import Observation
+
+@attached(extension, conformances: PersistentModel)
 @attached(memberAttribute)
-@attached(member, names: named(_modelContext), named(_isFault), named(_isFaulting), named(didChange), named(fault), named(_copy), named(CodingKeys), named(init), named(persistentModelID))
+@attached(member, names: named(_observationRegistrar), named(_modelContext), named(_isFault), named(_isFaulting), named(access), named(withMutation), named(didChange), named(fault), named(_copy), named(CodingKeys), named(init), named(persistentModelID))
 public macro Model() = #externalMacro(module: "JsonDataMacros", type: "ModelMacro")
 
-public protocol PersistentModel: AnyObject, Codable {
+public protocol PersistentModel: AnyObject, Codable, Observable {
     var persistentModelID: String { get set }
     var _modelContext: ModelContext? { get set }
     var _isFault: Bool { get set }
     var _isFaulting: Bool { get set }
+    func access<Member>(keyPath: KeyPath<Self, Member>)
+    func withMutation<Member, Result>(keyPath: KeyPath<Self, Member>, _ mutation: () throws -> Result) rethrows -> Result
     func fault()
     func _copy(from other: any PersistentModel)
     init()
@@ -90,6 +94,7 @@ public struct Field<Value: Codable>: Codable {
         storage storageKeyPath: ReferenceWritableKeyPath<T, Field<Value>>
     ) -> Value {
         get {
+            instance.access(keyPath: wrappedKeyPath)
             instance.fault()
             let storage = instance[keyPath: storageKeyPath]
             // fault() 之后 value 一定会被填充；
@@ -97,11 +102,13 @@ public struct Field<Value: Codable>: Codable {
             return storage.value ?? storage.defaultValue!
         }
         set {
-            instance.fault()
-            instance[keyPath: storageKeyPath].value = newValue
-            
-            if !instance._isFaulting {
-                instance._modelContext?._save(instance)
+            instance.withMutation(keyPath: wrappedKeyPath) {
+                instance.fault()
+                instance[keyPath: storageKeyPath].value = newValue
+                
+                if !instance._isFaulting {
+                    instance._modelContext?._save(instance)
+                }
             }
         }
     }

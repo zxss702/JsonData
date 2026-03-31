@@ -12,7 +12,7 @@ public extension SwiftData.ModelContext {
 }
 
 @available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
-public extension SwiftData.ModelContainer {
+public nonisolated extension SwiftData.ModelContainer {
     func freshContext() -> SwiftData.ModelContext {
         SwiftData.ModelContext(self)
     }
@@ -120,7 +120,7 @@ public struct Field<Value: Codable>: Codable {
     }
 }
 
-public extension ModelContainer {
+public nonisolated extension ModelContainer {
     func freshContext() -> ModelContext {
         mainContext
     }

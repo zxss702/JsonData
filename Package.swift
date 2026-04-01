@@ -26,6 +26,12 @@ let package = Package(
             dependencies: [
                 "JsonDataMacros",
             ]
+        ),
+        .testTarget(
+            name: "JsonDataTests",
+            dependencies: [
+                "JsonData",
+            ]
         )
     ]
 )

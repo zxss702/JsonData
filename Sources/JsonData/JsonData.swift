@@ -25,6 +25,9 @@ public nonisolated extension SwiftData.ModelContainer {
 @attached(member, names: named(_observationRegistrar), named(_modelContext), named(_isFault), named(_isFaulting), named(access), named(withMutation), named(didChange), named(fault), named(_copy), named(CodingKeys), named(init), named(persistentModelID))
 public macro Model() = #externalMacro(module: "JsonDataMacros", type: "ModelMacro")
 
+@attached(peer)
+public macro Transient() = #externalMacro(module: "JsonDataMacros", type: "TransientMacro")
+
 public protocol PersistentModel: AnyObject, Codable, Observable {
     var persistentModelID: String { get set }
     var _modelContext: ModelContext? { get set }

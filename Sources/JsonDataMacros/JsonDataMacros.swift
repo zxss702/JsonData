@@ -3,6 +3,59 @@ import SwiftSyntax
 import SwiftSyntaxBuilder
 import SwiftSyntaxMacros
 
+private struct PersistentStoredProperty {
+    let name: String
+    let type: String
+}
+
+private extension AttributeListSyntax.Element {
+    var attributeSyntax: AttributeSyntax? {
+        switch self {
+        case .attribute(let attribute):
+            attribute
+        case .ifConfigDecl:
+            nil
+        }
+    }
+}
+
+private extension VariableDeclSyntax {
+    var hasAccessor: Bool {
+        bindings.contains { binding in
+            binding.accessorBlock != nil
+        }
+    }
+
+    var hasTransientAttribute: Bool {
+        return attributes.contains { element in
+            guard let attribute = element.attributeSyntax else { return false }
+            let name = attribute.attributeName.trimmedDescription
+            return name == "Transient" || name.hasSuffix(".Transient")
+        }
+    }
+
+    var persistentStoredProperties: [PersistentStoredProperty] {
+        guard !hasAccessor, !hasTransientAttribute else { return [] }
+        return bindings.compactMap { binding in
+            guard
+                let identifier = binding.pattern.as(IdentifierPatternSyntax.self)?.identifier.text,
+                let type = binding.typeAnnotation?.type.trimmedDescription
+            else {
+                return nil
+            }
+            return PersistentStoredProperty(name: identifier, type: type)
+        }
+    }
+}
+
+private func persistentStoredProperties(
+    in declaration: some DeclGroupSyntax
+) -> [PersistentStoredProperty] {
+    declaration.memberBlock.members
+        .compactMap { $0.decl.as(VariableDeclSyntax.self) }
+        .flatMap(\.persistentStoredProperties)
+}
+
 public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
     public static func expansion(
         of node: AttributeSyntax,
@@ -27,10 +80,7 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
         in context: some MacroExpansionContext
     ) throws -> [AttributeSyntax] {
         guard let varDecl = member.as(VariableDeclSyntax.self) else { return [] }
-        let hasAccessor = varDecl.bindings.contains { binding in
-            binding.accessorBlock != nil
-        }
-        if hasAccessor { return [] }
+        guard !varDecl.persistentStoredProperties.isEmpty else { return [] }
         
         return ["@Field"]
     }
@@ -41,20 +91,12 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
         conformingTo protocols: [TypeSyntax],
         in context: some MacroExpansionContext
     ) throws -> [DeclSyntax] {
-        // 收集所有用户声明的存储属性
         var codingKeys = "enum CodingKeys: String, CodingKey {\n  case persistentModelID\n"
         var assignments = ""
-        let variables = declaration.memberBlock.members.compactMap { $0.decl.as(VariableDeclSyntax.self) }
-        for v in variables {
-            let hasAccessor = v.bindings.contains { $0.accessorBlock != nil }
-            if !hasAccessor {
-                for binding in v.bindings {
-                    if let ident = binding.pattern.as(IdentifierPatternSyntax.self)?.identifier.text {
-                        codingKeys += "  case \(ident)\n"
-                        assignments += "self.\(ident) = other.\(ident)\n"
-                    }
-                }
-            }
+        let variables = persistentStoredProperties(in: declaration)
+        for variable in variables {
+            codingKeys += "  case \(variable.name)\n"
+            assignments += "self.\(variable.name) = other.\(variable.name)\n"
         }
         codingKeys += "}\n"
         let typeName = declaration.as(ClassDeclSyntax.self)?.name.text ?? "Self"
@@ -96,15 +138,9 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
             """,
             """
             \(raw: {
-                // 生成 fault 空壳用的 init()，需要初始化所有 stored properties
                 var initBody = "self.persistentModelID = \"\"\n"
-                for v in variables {
-                    let hasAccessor = v.bindings.contains { $0.accessorBlock != nil }
-                    if !hasAccessor {
-                        if let name = v.bindings.first?.pattern.as(IdentifierPatternSyntax.self)?.identifier.text {
-                            initBody += "self._\(name) = Field()\n"
-                        }
-                    }
+                for variable in variables {
+                    initBody += "self._\(variable.name) = Field()\n"
                 }
                 return "public required init() {\n\(initBody)}"
             }())
@@ -113,13 +149,8 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
             public required init(from decoder: Decoder) throws {
                 let container = try decoder.container(keyedBy: CodingKeys.self)
                 self.persistentModelID = try container.decode(String.self, forKey: .persistentModelID)
-                \(raw: variables.filter { v in
-                    let hasAccessor = v.bindings.contains { $0.accessorBlock != nil }
-                    return !hasAccessor
-                }.map { v in 
-                    let name = v.bindings.first!.pattern.as(IdentifierPatternSyntax.self)!.identifier.text
-                    let type = v.bindings.first!.typeAnnotation!.type.trimmedDescription
-                    return "self._\(name) = try container.decode(Field<\(type)>.self, forKey: .\(name))" 
+                \(raw: variables.map { variable in
+                    "self._\(variable.name) = try container.decode(Field<\(variable.type)>.self, forKey: .\(variable.name))"
                 }.joined(separator: "\n"))
             }
             """,
@@ -130,9 +161,20 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
     }
 }
 
+public struct TransientMacro: PeerMacro {
+    public static func expansion(
+        of node: AttributeSyntax,
+        providingPeersOf declaration: some DeclSyntaxProtocol,
+        in context: some MacroExpansionContext
+    ) throws -> [DeclSyntax] {
+        []
+    }
+}
+
 @main
 struct JsonDataPlugin: CompilerPlugin {
     let providingMacros: [Macro.Type] = [
         ModelMacro.self,
+        TransientMacro.self,
     ]
 }

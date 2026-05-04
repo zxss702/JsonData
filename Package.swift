@@ -11,7 +11,8 @@ let package = Package(
         .library(name: "JsonData", targets: ["JsonData"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "601.0.0"),
+        .package(url: "https://github.com/swiftlang/swift-syntax.git", "601.0.0"..<"604.0.0"),
+        .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.10.0"),
     ],
     targets: [
         .macro(
@@ -25,6 +26,7 @@ let package = Package(
             name: "JsonData",
             dependencies: [
                 "JsonDataMacros",
+                .product(name: "GRDB", package: "GRDB.swift"),
             ]
         ),
         .testTarget(

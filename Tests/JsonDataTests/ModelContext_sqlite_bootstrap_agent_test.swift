@@ -6,16 +6,17 @@ import XCTest
 final class ModelContext_sqlite_bootstrap_agent_test: XCTestCase {
     func testModelContextURLBootstrapsSQLiteStoreAndReloadsModelByID() throws {
         let directory = try makeTemporaryDirectory(prefix: "JsonDataSQLiteBootstrapAgentTests")
+        let dbURL = directory.appendingPathComponent("db.sqlite")
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let insertContext = ModelContext(url: directory)
+        let insertContext = ModelContext(url: dbURL)
         let user = SQLiteBootstrapAgentUser(name: "A", age: 21)
         insertContext.insert(user)
+        try? insertContext.save()
 
-        let sqliteURL = directory.appendingPathComponent("JsonData.sqlite")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: sqliteURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dbURL.path))
 
-        let reloadContext = ModelContext(url: directory)
+        let reloadContext = ModelContext(url: dbURL)
         let reloaded: SQLiteBootstrapAgentUser? = reloadContext.model(for: user.persistentModelID)
         XCTAssertEqual(reloaded?.name, "A")
         XCTAssertEqual(reloaded?.age, 21)

@@ -1,7 +1,8 @@
 import Foundation
-import GRDB
 
 #if !canImport(SwiftData)
+import GRDB
+
 private final class WeakRef {
     weak var value: (any PersistentModel)?
 
@@ -16,6 +17,17 @@ public final class ModelContext: @unchecked Sendable {
 
     private let identityMapLock = NSLock()
     private var identityMap: [String: WeakRef] = [:]
+    
+    private var insertedModels: [String: any PersistentModel] = [:]
+    private var changedModels: [String: any PersistentModel] = [:]
+    private var deletedModels: [String: any PersistentModel] = [:]
+    
+    public var hasChanges: Bool {
+        identityMapLock.lock()
+        defer { identityMapLock.unlock() }
+        return !insertedModels.isEmpty || !changedModels.isEmpty || !deletedModels.isEmpty
+    }
+
     private let databaseQueue: DatabaseQueue
 
     public static let contextDidChange = Notification.Name("JsonData.ModelContextDidChange")
@@ -29,10 +41,14 @@ public final class ModelContext: @unchecked Sendable {
     }
 
     public init(url: URL) {
-        self.baseURL = url
+        self.baseURL = url.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
-        let dbURL = baseURL.appendingPathComponent("JsonData.sqlite")
-        databaseQueue = try! DatabaseQueue(path: dbURL.path)
+        databaseQueue = try! DatabaseQueue(path: url.path)
+    }
+    
+    public init(_ container: ModelContainer) {
+        self.baseURL = container.mainContext.baseURL
+        self.databaseQueue = container.mainContext.databaseQueue
     }
 
     private func _purgeStaleEntries() {
@@ -45,14 +61,14 @@ public final class ModelContext: @unchecked Sendable {
         }
     }
 
-    private func _tableName<T: PersistentModel>(for type: T.Type) -> String {
+    private func _tableName(for type: any PersistentModel.Type) -> String {
         if let schemaType = type as? any _JsonDataSchemaProviding.Type {
             return schemaType._jsonDataTableName
         }
         return String(describing: type)
     }
 
-    private func _columns<T: PersistentModel>(for type: T.Type) -> [_JsonDataColumnInfo] {
+    private func _columns(for type: any PersistentModel.Type) -> [_JsonDataColumnInfo] {
         if let schemaType = type as? any _JsonDataSchemaProviding.Type {
             return schemaType._jsonDataColumns
         }
@@ -66,18 +82,22 @@ public final class ModelContext: @unchecked Sendable {
         }
     }
 
-    private func _ensureTable<T: PersistentModel>(for type: T.Type) throws {
+    private func _ensureTable(for type: any PersistentModel.Type, in db: Database? = nil) throws {
         let tableName = _tableName(for: type)
         let columns = _columns(for: type)
-        try databaseQueue.write { db in
-            var definitions = ["id TEXT PRIMARY KEY NOT NULL", "payload BLOB NOT NULL"]
-            for column in columns {
-                let sqlType = _sqlType(for: column.kind)
-                let nullability = column.isOptional ? "" : " NOT NULL"
-                definitions.append("\(column.columnName) \(sqlType)\(nullability)")
-            }
-            let sql = "CREATE TABLE IF NOT EXISTS \(_quote(identifier: tableName)) (\(definitions.joined(separator: ", ")) )"
+        
+        let definitions = ["id TEXT PRIMARY KEY NOT NULL", "payload BLOB NOT NULL"] + columns.map { column in
+            let sqlType = _sqlType(for: column.kind)
+            let nullability = column.isOptional ? "" : " NOT NULL"
+            let unique = column.options.contains(.unique) ? " UNIQUE" : ""
+            return "\(column.columnName) \(sqlType)\(nullability)\(unique)"
+        }
+        let sql = "CREATE TABLE IF NOT EXISTS \(_quote(identifier: tableName)) (\(definitions.joined(separator: ", ")) )"
+        
+        if let db {
             try db.execute(sql: sql)
+        } else {
+            try databaseQueue.write { try $0.execute(sql: sql) }
         }
     }
 
@@ -122,7 +142,7 @@ public final class ModelContext: @unchecked Sendable {
         }
     }
 
-    private func _extractColumnValues<T: PersistentModel>(from model: T) throws -> [String: DatabaseValueConvertible?] {
+    private func _extractColumnValues(from model: any PersistentModel) throws -> [String: DatabaseValueConvertible?] {
         let mirror = Mirror(reflecting: model)
         var fields: [String: Any?] = [:]
         for child in mirror.children {
@@ -131,7 +151,7 @@ public final class ModelContext: @unchecked Sendable {
         }
 
         var values: [String: DatabaseValueConvertible?] = [:]
-        for column in _columns(for: T.self) {
+        for column in _columns(for: type(of: model)) {
             let rawValue = fields[column.propertyName] ?? nil
             values[column.columnName] = try _databaseValue(for: rawValue, kind: column.kind)
         }
@@ -150,58 +170,128 @@ public final class ModelContext: @unchecked Sendable {
         return nil
     }
 
-    public func _save<T: PersistentModel>(_ model: T) {
-        do {
-            try _ensureTable(for: T.self)
-            let payload = try JSONEncoder().encode(model)
-            let tableName = _tableName(for: T.self)
-            let columnValues = try _extractColumnValues(from: model)
-            try databaseQueue.write { db in
-                var columns = ["id", "payload"]
-                var placeholders = ["?", "?"]
-                var arguments: [DatabaseValueConvertible?] = [model.persistentModelID, payload]
-                for column in _columns(for: T.self) {
-                    columns.append(column.columnName)
-                    placeholders.append("?")
-                    arguments.append(columnValues[column.columnName] ?? nil)
-                }
-                let updates = (["payload = ?"] + _columns(for: T.self).map { "\(_quote(identifier: $0.columnName)) = ?" }).joined(separator: ", ")
-                let sql = "INSERT INTO \(_quote(identifier: tableName)) (\(columns.map(_quote(identifier:)).joined(separator: ", "))) VALUES (\(placeholders.joined(separator: ", "))) ON CONFLICT(id) DO UPDATE SET \(updates)"
-                let updateArguments = StatementArguments(arguments + [payload] + _columns(for: T.self).map { columnValues[$0.columnName] ?? nil })
-                try db.execute(sql: sql, arguments: updateArguments)
-            }
-            _postContextDidChange()
-        } catch {
+    public func _modelDidChange(_ model: any PersistentModel) {
+        identityMapLock.lock()
+        defer { identityMapLock.unlock() }
+        let id = model.persistentModelID
+        if insertedModels[id] == nil && deletedModels[id] == nil {
+            changedModels[id] = model
         }
     }
 
-    public func save() throws {}
+    private func _saveModel(_ model: any PersistentModel, in db: Database) throws {
+        let modelType = type(of: model)
+        try _ensureTable(for: modelType, in: db)
+        let payload = try JSONEncoder().encode(AnyEncodable(model))
+        let tableName = _tableName(for: modelType)
+        let columnValues = try _extractColumnValues(from: model)
+        
+        let cols = _columns(for: modelType)
+        var columns = ["id", "payload"]
+        var placeholders = ["?", "?"]
+        var arguments: [DatabaseValueConvertible?] = [model.persistentModelID, payload]
+        
+        for column in cols {
+            columns.append(column.columnName)
+            placeholders.append("?")
+            arguments.append(columnValues[column.columnName] ?? nil)
+        }
+        
+        let updates = (["payload = ?"] + cols.map { "\(_quote(identifier: $0.columnName)) = ?" }).joined(separator: ", ")
+        let sql = "INSERT INTO \(_quote(identifier: tableName)) (\(columns.map(_quote(identifier:)).joined(separator: ", "))) VALUES (\(placeholders.joined(separator: ", "))) ON CONFLICT(id) DO UPDATE SET \(updates)"
+        let updateArguments = StatementArguments(arguments + [payload] + cols.map { columnValues[$0.columnName] ?? nil })
+        try db.execute(sql: sql, arguments: updateArguments)
+    }
+
+    public func save() throws {
+        identityMapLock.lock()
+        let toInsert = insertedModels.values
+        let toUpdate = changedModels.values
+        let toDelete = deletedModels.values
+        
+        insertedModels.removeAll()
+        changedModels.removeAll()
+        deletedModels.removeAll()
+        identityMapLock.unlock()
+        
+        if toInsert.isEmpty && toUpdate.isEmpty && toDelete.isEmpty {
+            return
+        }
+        
+        try databaseQueue.write { db in
+            for model in toDelete {
+                let modelType = type(of: model)
+                try _ensureTable(for: modelType, in: db)
+                try db.execute(
+                    sql: "DELETE FROM \(_quote(identifier: _tableName(for: modelType))) WHERE id = ?",
+                    arguments: [model.persistentModelID]
+                )
+            }
+            
+            for model in toInsert {
+                try _saveModel(model, in: db)
+            }
+            
+            for model in toUpdate {
+                try _saveModel(model, in: db)
+            }
+        }
+        _postContextDidChange()
+    }
 
     public func insert<T: PersistentModel>(_ model: T) {
         identityMapLock.lock()
         identityMap[model.persistentModelID] = WeakRef(model)
+        insertedModels[model.persistentModelID] = model
         identityMapLock.unlock()
 
         model._modelContext = self
         model._isFault = false
-        _save(model)
     }
 
     public func delete<T: PersistentModel>(_ model: T) {
         identityMapLock.lock()
-        identityMap.removeValue(forKey: model.persistentModelID)
+        let id = model.persistentModelID
+        
+        if deletedModels[id] != nil {
+            identityMapLock.unlock()
+            return // prevent infinite recursion
+        }
+        
+        identityMap.removeValue(forKey: id)
+        insertedModels.removeValue(forKey: id)
+        changedModels.removeValue(forKey: id)
+        deletedModels[id] = model
         identityMapLock.unlock()
-
-        do {
-            try _ensureTable(for: T.self)
-            try databaseQueue.write { db in
-                try db.execute(
-                    sql: "DELETE FROM \(_quote(identifier: _tableName(for: T.self))) WHERE id = ?",
-                    arguments: [model.persistentModelID]
-                )
+        
+        _processCascadeDelete(for: model)
+    }
+    
+    private func _processCascadeDelete(for model: any PersistentModel) {
+        guard let schemaType = type(of: model) as? any _JsonDataSchemaProviding.Type else { return }
+        let cascadeRelationships = schemaType._jsonDataRelationships.filter { $0.deleteRule == .cascade }
+        if cascadeRelationships.isEmpty { return }
+        
+        if model._isFault {
+            _faultIn(model)
+        }
+        
+        let mirror = Mirror(reflecting: model)
+        var fields: [String: Any?] = [:]
+        for child in mirror.children {
+            guard let label = child.label, label.hasPrefix("_") else { continue }
+            fields[String(label.dropFirst())] = _fieldStorageValue(from: child.value)
+        }
+        
+        for rel in cascadeRelationships {
+            guard let value = fields[rel.propertyName] as? Any else { continue }
+            if let relatedModel = value as? any PersistentModel {
+                self.delete(relatedModel)
+            } else if let relatedArray = value as? [any PersistentModel] {
+                for rm in relatedArray {
+                    self.delete(rm)
+                }
             }
-            _postContextDidChange()
-        } catch {
         }
     }
 
@@ -255,6 +345,64 @@ public final class ModelContext: @unchecked Sendable {
         }
 
         return results
+    }
+
+    public func observe<T: PersistentModel & Sendable>(
+        _ descriptor: FetchDescriptor<T> = FetchDescriptor<T>()
+    ) -> ValueObservation<ValueReducers.Fetch<[T]>> {
+        let tableName = _tableName(for: T.self)
+        try? _ensureTable(for: T.self)
+        let effectiveLimit = descriptor.fetchLimit
+        
+        return ValueObservation.tracking { db in
+            let query = try self._buildFetchQuery(for: T.self, descriptor: descriptor, limit: effectiveLimit, tableName: tableName)
+            let rows = try Row.fetchAll(db, sql: query.sql, arguments: query.arguments)
+            let rawData = try rows.map { row -> (String, Data) in
+                let id: String = row["id"]
+                let payload: Data = row["payload"]
+                return (id, payload)
+            }
+            
+            var results: [T] = []
+            self.identityMapLock.lock()
+            self._purgeStaleEntries()
+            defer { self.identityMapLock.unlock() }
+
+            for (id, payload) in rawData {
+                if let ref = self.identityMap[id], let cached = ref.value as? T {
+                    results.append(cached)
+                    continue
+                }
+
+                if descriptor.predicate == nil {
+                    let fault = T()
+                    fault.persistentModelID = id
+                    fault._isFault = true
+                    fault._modelContext = self
+                    self.identityMap[id] = WeakRef(fault)
+                    results.append(fault)
+                    continue
+                }
+
+                if let model = try? JSONDecoder().decode(T.self, from: payload) {
+                    model._modelContext = self
+                    model._isFault = false
+                    self.identityMap[id] = WeakRef(model)
+                    results.append(model)
+                }
+            }
+            return results
+        }
+    }
+
+    @MainActor
+    public func startObservation<T: PersistentModel & Sendable>(
+        _ descriptor: FetchDescriptor<T> = FetchDescriptor<T>(),
+        onError: @Sendable @escaping (Error) -> Void = { _ in },
+        onChange: @MainActor @Sendable @escaping ([T]) -> Void
+    ) -> DatabaseCancellable {
+        let obs = observe(descriptor)
+        return obs.start(in: databaseQueue, onError: onError, onChange: onChange)
     }
 
     public func model<T: PersistentModel>(for id: String) -> T? {
@@ -316,11 +464,10 @@ public final class ModelContext: @unchecked Sendable {
         var arguments = StatementArguments()
 
         if let predicate = descriptor.predicate {
-            let columns = _columns(for: type)
-            let compiled = try _JsonDataPredicateCompiler.compile(predicate, modelType: type, columns: columns)
-            if !compiled.sql.isEmpty {
-                sql += " WHERE \(compiled.sql)"
-                arguments += compiled.arguments
+            if !predicate.sql.isEmpty {
+                sql += " WHERE \(predicate.sql)"
+                let dbArgs = predicate.arguments.map { _databaseArgument(for: $0) }
+                arguments += StatementArguments(dbArgs)
             }
         }
 
@@ -393,115 +540,23 @@ private func _jsonDataColumn(
 }
 
 
-private enum _JsonDataPredicateCompiler {
-    struct Result {
-        let sql: String
-        let arguments: StatementArguments
-    }
-
-    static func compile<T: PersistentModel>(
-        _ predicate: Predicate<T>,
-        modelType: T.Type,
-        columns: [_JsonDataColumnInfo]
-    ) throws -> Result {
-        let resolver = ModelContext._keyPathResolver(for: modelType)
-        return try compileNode(predicate.expression, columns: columns, resolver: resolver)
-    }
-
-    private static func compileNode(
-        _ node: Any,
-        columns: [_JsonDataColumnInfo],
-        resolver: ((AnyKeyPath) -> String?)?
-    ) throws -> Result {
-        let typeName = String(describing: Swift.type(of: node))
-        let mirror = Mirror(reflecting: node)
-
-        if typeName.starts(with: "Conjunction<") {
-            let lhs = try compileNode(mirror.childValue(named: "lhs")!, columns: columns, resolver: resolver)
-            let rhs = try compileNode(mirror.childValue(named: "rhs")!, columns: columns, resolver: resolver)
-            return Result(sql: "(\(lhs.sql) AND \(rhs.sql))", arguments: lhs.arguments + rhs.arguments)
+private func _databaseArgument(for value: Any?) -> DatabaseValueConvertible? {
+    switch value {
+    case let int as Int: return int
+    case let int64 as Int64: return int64
+    case let double as Double: return double
+    case let string as String: return string
+    case let bool as Bool: return bool ? 1 : 0
+    case let uuid as UUID: return uuid.uuidString
+    case let date as Date: return ISO8601DateFormatter().string(from: date)
+    case let data as Data: return data
+    case nil: return nil
+    default:
+        if let value {
+            let data = try? JSONEncoder().encode(AnyEncodable(value))
+            return data.map { String(decoding: $0, as: UTF8.self) }
         }
-
-        if typeName.starts(with: "Disjunction<") {
-            let lhs = try compileNode(mirror.childValue(named: "lhs")!, columns: columns, resolver: resolver)
-            let rhs = try compileNode(mirror.childValue(named: "rhs")!, columns: columns, resolver: resolver)
-            return Result(sql: "(\(lhs.sql) OR \(rhs.sql))", arguments: lhs.arguments + rhs.arguments)
-        }
-
-        if typeName.starts(with: "Equal<") {
-            let lhs = try compileOperand(mirror.childValue(named: "lhs")!, columns: columns, resolver: resolver)
-            let rhs = try compileOperand(mirror.childValue(named: "rhs")!, columns: columns, resolver: resolver)
-            return Result(sql: "\(lhs.sql) = \(rhs.sql)", arguments: lhs.arguments + rhs.arguments)
-        }
-
-        if typeName.starts(with: "Comparison<") {
-            let lhs = try compileOperand(mirror.childValue(named: "lhs")!, columns: columns, resolver: resolver)
-            let rhs = try compileOperand(mirror.childValue(named: "rhs")!, columns: columns, resolver: resolver)
-            let op = String(describing: mirror.childValue(named: "op")!)
-            let sqlOperator: String
-            switch op {
-            case "lessThan": sqlOperator = "<"
-            case "lessThanOrEqual": sqlOperator = "<="
-            case "greaterThan": sqlOperator = ">"
-            case "greaterThanOrEqual": sqlOperator = ">="
-            default: throw NSError(domain: "JsonData.Predicate", code: 1)
-            }
-            return Result(sql: "\(lhs.sql) \(sqlOperator) \(rhs.sql)", arguments: lhs.arguments + rhs.arguments)
-        }
-
-        throw NSError(domain: "JsonData.Predicate", code: 2)
-    }
-
-    private static func compileOperand(
-        _ node: Any,
-        columns: [_JsonDataColumnInfo],
-        resolver: ((AnyKeyPath) -> String?)?
-    ) throws -> Result {
-        let typeName = String(describing: Swift.type(of: node))
-        let mirror = Mirror(reflecting: node)
-
-        if typeName.starts(with: "KeyPath<") {
-            guard let keyPathValue = mirror.childValue(named: "keyPath") else {
-                throw NSError(domain: "JsonData.Predicate", code: 3)
-            }
-            guard let column = _jsonDataColumn(for: keyPathValue, columns: columns, resolver: resolver) else {
-                throw NSError(domain: "JsonData.Predicate", code: 4)
-            }
-            return Result(sql: "\"\(column.columnName)\"", arguments: StatementArguments())
-        }
-
-        if typeName.starts(with: "Value<") {
-            let value = mirror.childValue(named: "value")
-            return Result(sql: "?", arguments: StatementArguments([databaseArgument(for: value)]))
-        }
-
-        throw NSError(domain: "JsonData.Predicate", code: 5)
-    }
-
-    private static func databaseArgument(for value: Any?) -> DatabaseValueConvertible? {
-        switch value {
-        case let int as Int: return int
-        case let int64 as Int64: return int64
-        case let double as Double: return double
-        case let string as String: return string
-        case let bool as Bool: return bool ? 1 : 0
-        case let uuid as UUID: return uuid.uuidString
-        case let date as Date: return ISO8601DateFormatter().string(from: date)
-        case let data as Data: return data
-        case nil: return nil
-        default:
-            if let value {
-                let data = try? JSONEncoder().encode(AnyEncodable(value))
-                return data.map { String(decoding: $0, as: UTF8.self) }
-            }
-            return nil
-        }
-    }
-}
-
-private extension Mirror {
-    func childValue(named name: String) -> Any? {
-        children.first { $0.label == name }?.value
+        return nil
     }
 }
 

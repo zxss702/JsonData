@@ -4,11 +4,23 @@ import SwiftSyntax
 import SwiftSyntaxBuilder
 import SwiftSyntaxMacros
 
+struct MacroError: Error, CustomStringConvertible {
+    let description: String
+    init(_ description: String) { self.description = description }
+}
+
 private struct PersistentStoredProperty {
     let name: String
     let type: String
     let baseType: String
     let isOptional: Bool
+    let attributeOptions: [String]
+    let relationshipInfo: RelationshipInfo?
+
+    struct RelationshipInfo {
+        let deleteRule: String
+        let destinationType: String
+    }
 
     var columnKind: String {
         switch baseType {
@@ -84,12 +96,45 @@ private extension VariableDeclSyntax {
                 isOptional = false
             }
 
+            var attributeOptions: [String] = []
+            var relationshipInfo: PersistentStoredProperty.RelationshipInfo? = nil
+
+            for element in attributes {
+                guard let attribute = element.attributeSyntax else { continue }
+                let attrName = attribute.attributeName.trimmedDescription
+                if attrName == "Attribute" || attrName.hasSuffix(".Attribute") {
+                    if let arguments = attribute.arguments?.as(LabeledExprListSyntax.self) {
+                        for arg in arguments {
+                            let expr = arg.expression.trimmedDescription
+                            if expr.hasSuffix(".unique") || expr == "unique" { attributeOptions.append(".unique") }
+                            if expr.hasSuffix(".externalStorage") || expr == "externalStorage" { attributeOptions.append(".externalStorage") }
+                            if expr.hasSuffix(".ephemeral") || expr == "ephemeral" { attributeOptions.append(".ephemeral") }
+                            if expr.hasSuffix(".transformable") || expr == "transformable" { attributeOptions.append(".transformable") }
+                        }
+                    }
+                } else if attrName == "Relationship" || attrName.hasSuffix(".Relationship") {
+                    var deleteRule = ".nullify"
+                    if let arguments = attribute.arguments?.as(LabeledExprListSyntax.self) {
+                        for arg in arguments {
+                            if arg.label?.text == "deleteRule" {
+                                let expr = arg.expression.trimmedDescription
+                                if expr.hasSuffix(".cascade") || expr == "cascade" { deleteRule = ".cascade" }
+                                else if expr.hasSuffix(".deny") || expr == "deny" { deleteRule = ".deny" }
+                            }
+                        }
+                    }
+                    relationshipInfo = PersistentStoredProperty.RelationshipInfo(deleteRule: deleteRule, destinationType: baseType)
+                }
+            }
+
             properties.append(
                 PersistentStoredProperty(
                     name: identifier,
                     type: type,
                     baseType: baseType,
-                    isOptional: isOptional
+                    isOptional: isOptional,
+                    attributeOptions: attributeOptions,
+                    relationshipInfo: relationshipInfo
                 )
             )
         }
@@ -151,8 +196,12 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
 
             let typeName = declaration.as(ClassDeclSyntax.self)?.name.text ?? "Self"
             let tableNameDecl = "internal static let _jsonDataTableName = \"\(typeName)\""
-            let columnEntries = variables.map { variable in
-                "_JsonDataColumnInfo(propertyName: \"\(variable.name)\", columnName: \"\(variable.name)\", kind: \(variable.columnKind), isOptional: \(variable.isOptional))"
+            
+            let persistentVariables = variables.filter { !$0.attributeOptions.contains(".ephemeral") }
+            
+            let columnEntries = persistentVariables.map { variable in
+                let optionsArray = variable.attributeOptions.isEmpty ? "" : ", options: [\(variable.attributeOptions.joined(separator: ", "))]"
+                return "_JsonDataColumnInfo(propertyName: \"\(variable.name)\", columnName: \"\(variable.name)\", kind: \(variable.columnKind), isOptional: \(variable.isOptional)\(optionsArray))"
             }.joined(separator: ",\n")
             let columnsDecl: String
             if columnEntries.isEmpty {
@@ -161,6 +210,23 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                 columnsDecl = """
                 internal static let _jsonDataColumns: [_JsonDataColumnInfo] = [
                 \(columnEntries)
+                ]
+                """
+            }
+            
+            let relationshipVariables = variables.filter { $0.relationshipInfo != nil }
+            let relationshipEntries = relationshipVariables.map { variable in
+                let info = variable.relationshipInfo!
+                return "_JsonDataRelationshipInfo(propertyName: \"\(variable.name)\", deleteRule: \(info.deleteRule), destinationType: \(info.destinationType).self)"
+            }.joined(separator: ",\n")
+            
+            let relationshipsDecl: String
+            if relationshipEntries.isEmpty {
+                relationshipsDecl = "internal static let _jsonDataRelationships: [_JsonDataRelationshipInfo] = []"
+            } else {
+                relationshipsDecl = """
+                internal static let _jsonDataRelationships: [_JsonDataRelationshipInfo] = [
+                \(relationshipEntries)
                 ]
                 """
             }
@@ -246,6 +312,9 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                 \(raw: columnsDecl)
                 """,
                 """
+                \(raw: relationshipsDecl)
+                """,
+                """
                 \(raw: resolverDecl)
                 """
             ]
@@ -262,10 +331,117 @@ public struct TransientMacro: PeerMacro {
     }
 }
 
+public struct AttributeMacro: PeerMacro {
+    public static func expansion(
+        of node: AttributeSyntax,
+        providingPeersOf declaration: some DeclSyntaxProtocol,
+        in context: some MacroExpansionContext
+    ) throws -> [DeclSyntax] { [] }
+}
+
+public struct RelationshipMacro: PeerMacro {
+    public static func expansion(
+        of node: AttributeSyntax,
+        providingPeersOf declaration: some DeclSyntaxProtocol,
+        in context: some MacroExpansionContext
+    ) throws -> [DeclSyntax] { [] }
+}
+
+public struct PredicateMacro: ExpressionMacro {
+    public static func expansion(
+        of node: some FreestandingMacroExpansionSyntax,
+        in context: some MacroExpansionContext
+    ) throws -> ExprSyntax {
+        guard let closure = node.trailingClosure else {
+            throw MacroError("Predicate macro requires a trailing closure")
+        }
+        
+        var parser = PredicateClosureParser(closure: closure)
+        let parsed = try parser.parse()
+        
+        let argsString = parsed.1.map { "\($0)" }.joined(separator: ", ")
+        
+        return "JsonData.Predicate(sql: \"\(raw: parsed.0)\", arguments: [\(raw: argsString)])"
+    }
+}
+
+private struct PredicateClosureParser {
+    let closure: ClosureExprSyntax
+    var sql: String = ""
+    var arguments: [String] = []
+    
+    var closureParamName: String = "$0"
+
+    mutating func parse() throws -> (String, [String]) {
+        if let signature = closure.signature {
+            if let paramList = signature.parameterClause?.as(ClosureShorthandParameterListSyntax.self) {
+                closureParamName = paramList.first?.name.text ?? "$0"
+            } else if let paramClause = signature.parameterClause?.as(ClosureParameterClauseSyntax.self) {
+                if let param = paramClause.parameters.first {
+                    closureParamName = param.secondName?.text ?? param.firstName.text
+                }
+            }
+        }
+
+        let statements = closure.statements
+        guard statements.count == 1, let expr = statements.first?.item.as(ExprSyntax.self) else {
+            throw MacroError("Predicate closure must contain a single expression")
+        }
+        
+        try parseExpr(expr)
+        return (sql, arguments)
+    }
+
+    mutating func parseExpr(_ expr: ExprSyntax) throws {
+        if let infix = expr.as(InfixOperatorExprSyntax.self) {
+            sql += "("
+            try parseExpr(infix.leftOperand)
+            sql += " "
+            
+            let op = infix.operator.trimmedDescription
+            switch op {
+            case "==": sql += "="
+            case "!=": sql += "!="
+            case "<", ">", "<=", ">=": sql += op
+            case "&&": sql += "AND"
+            case "||": sql += "OR"
+            default: throw MacroError("Unsupported operator \\(op)")
+            }
+            
+            sql += " "
+            try parseExpr(infix.rightOperand)
+            sql += ")"
+        } else if let member = expr.as(MemberAccessExprSyntax.self) {
+            if let base = member.base, base.trimmedDescription == closureParamName {
+                let propName = member.declName.baseName.text
+                sql += "\\\"\(propName)\\\""
+            } else {
+                sql += "?"
+                arguments.append(expr.trimmedDescription)
+            }
+        } else if let prefix = expr.as(PrefixOperatorExprSyntax.self) {
+            let op = prefix.operator.trimmedDescription
+            if op == "!" {
+                sql += "NOT ("
+                try parseExpr(prefix.expression)
+                sql += ")"
+            } else {
+                throw MacroError("Unsupported prefix operator \\(op)")
+            }
+        } else {
+            sql += "?"
+            arguments.append(expr.trimmedDescription)
+        }
+    }
+}
+
 @main
 struct JsonDataPlugin: CompilerPlugin {
     let providingMacros: [Macro.Type] = [
         ModelMacro.self,
         TransientMacro.self,
+        AttributeMacro.self,
+        RelationshipMacro.self,
+        PredicateMacro.self,
     ]
 }

@@ -22,11 +22,39 @@ public nonisolated extension SwiftData.ModelContainer {
 
 @attached(extension, conformances: PersistentModel, _JsonDataSchemaProviding)
 @attached(memberAttribute)
-@attached(member, names: named(_observationRegistrar), named(_modelContext), named(_isFault), named(_isFaulting), named(access), named(withMutation), named(didChange), named(fault), named(_copy), named(CodingKeys), named(init), named(persistentModelID), named(_jsonDataTableName), named(_jsonDataColumns), named(_jsonDataPropertyName))
+@attached(member, names: named(_observationRegistrar), named(_modelContext), named(_isFault), named(_isFaulting), named(access), named(withMutation), named(didChange), named(fault), named(_copy), named(CodingKeys), named(init), named(persistentModelID), named(_jsonDataTableName), named(_jsonDataColumns), named(_jsonDataRelationships), named(_jsonDataPropertyName))
 public macro Model() = #externalMacro(module: "JsonDataMacros", type: "ModelMacro")
 
 @attached(peer)
 public macro Transient() = #externalMacro(module: "JsonDataMacros", type: "TransientMacro")
+
+public struct Schema {
+    public struct Attribute {
+        public enum Option: Sendable {
+            case unique
+            case externalStorage
+            case ephemeral
+            case transformable
+        }
+    }
+    
+    public struct Relationship {
+        public enum DeleteRule: Sendable {
+            case nullify
+            case cascade
+            case deny
+        }
+    }
+}
+
+@attached(peer)
+public macro Attribute(_ options: Schema.Attribute.Option...) = #externalMacro(module: "JsonDataMacros", type: "AttributeMacro")
+
+@attached(peer)
+public macro Relationship(deleteRule: Schema.Relationship.DeleteRule = .nullify, inverse: AnyKeyPath? = nil) = #externalMacro(module: "JsonDataMacros", type: "RelationshipMacro")
+
+@freestanding(expression)
+public macro Predicate<T>(_ body: (T) -> Bool) -> JsonData.Predicate<T> = #externalMacro(module: "JsonDataMacros", type: "PredicateMacro")
 
 public protocol PersistentModel: AnyObject, Codable, Observable {
     var persistentModelID: String { get set }
@@ -42,7 +70,7 @@ public protocol PersistentModel: AnyObject, Codable, Observable {
 
 public typealias SortDescriptor<T: PersistentModel> = Foundation.SortDescriptor<T>
 
-public struct FetchDescriptor<T: PersistentModel> {
+public struct FetchDescriptor<T: PersistentModel>: @unchecked Sendable {
     public var sortBy: [SortDescriptor<T>]
     public var predicate: Predicate<T>?
     public var fetchLimit: Int?
@@ -110,7 +138,7 @@ public struct Field<Value: Codable>: Codable {
                 instance[keyPath: storageKeyPath].value = newValue
                 
                 if !instance._isFaulting {
-                    instance._modelContext?._save(instance)
+                    instance._modelContext?._modelDidChange(instance)
                 }
             }
         }

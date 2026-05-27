@@ -6,13 +6,15 @@ import XCTest
 final class ModelContext_faulting_identityMap_agent_test: XCTestCase {
     func testFetchReturnsFaultPropertyAccessFaultsInAndModelForReusesInstance() throws {
         let directory = try makeTemporaryDirectory(prefix: "JsonDataFaultingIdentityMapAgentTests")
+        let dbURL = directory.appendingPathComponent("db.sqlite")
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let insertContext = ModelContext(url: directory)
+        let insertContext = ModelContext(url: dbURL)
         let user = FaultingIdentityAgentUser(name: "A", age: 21)
         insertContext.insert(user)
+        try? insertContext.save()
 
-        let context = ModelContext(url: directory)
+        let context = ModelContext(url: dbURL)
         let fetched = try context.fetch(FetchDescriptor<FaultingIdentityAgentUser>())
         let fault = try XCTUnwrap(fetched.first)
 

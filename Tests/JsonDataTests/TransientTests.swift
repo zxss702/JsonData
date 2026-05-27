@@ -35,19 +35,21 @@ final class TransientTests: XCTestCase {
 
     func testTransientFieldsDoNotRoundTripThroughModelContext() throws {
         let directory = try makeTemporaryDirectory(prefix: "JsonDataTransientTests")
+        let dbURL = directory.appendingPathComponent("db.sqlite")
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let note = TransientNote(title: "hello", cache: "skip", qualifiedCache: "skip-too")
-        let insertContext = ModelContext(url: directory)
+        let insertContext = ModelContext(url: dbURL)
         insertContext.insert(note)
+        try? insertContext.save()
 
-        let reloadedContext = ModelContext(url: directory)
+        let reloadedContext = ModelContext(url: dbURL)
         let reloaded: TransientNote? = reloadedContext.model(for: note.persistentModelID)
         XCTAssertEqual(reloaded?.title, "hello")
         XCTAssertNil(reloaded?.cache)
         XCTAssertNil(reloaded?.qualifiedCache)
 
-        let faultContext = ModelContext(url: directory)
+        let faultContext = ModelContext(url: dbURL)
         let fetched = try faultContext.fetch(FetchDescriptor<TransientNote>())
         let faulted = try XCTUnwrap(fetched.first)
         XCTAssertTrue(faulted._isFault)

@@ -1,7 +1,7 @@
 #if !canImport(SwiftData)
 import Foundation
 import XCTest
-import JsonData
+@testable import JsonData
 
 final class TransientTests: XCTestCase {
     func testTransientFieldsAreExcludedFromEncoding() throws {

@@ -1,0 +1,123 @@
+# JsonData
+
+**JsonData** 是一个专为 Swift 跨平台生态设计的数据持久化框架。它提供了与 Apple **SwiftData** 完全一致的心智模型和 API，但在底层由久经考验的 [GRDB](https://github.com/groue/GRDB.swift) 强力驱动，支持 **Linux**、**Windows** 跨平台。
+
+无论是服务端的重度并发查询，还是跨平台客户端的响应式 UI，JsonData 都能为您提供如同 SwiftData 一样丝滑优雅的开发体验。
+
+> **关于命名**：为什么叫 JsonData 这么一个奇怪的名字？翻翻 Git 提交记录就知道了——这个库最初确实是用 JSON 文件来做持久化的。后来发现性能实在太差了，所以就切换到了 GRDB，但名字嘛……改起来牵一发而动全身，索性就这样了。
+
+---
+
+## 核心特性
+
+- **默认回退SwiftData**: 在 macOS、iOS 上，`import JsonData` 等价于 `import SwiftData`，在其他平台是自动切换为 GDRB 实现的 JsonData。
+- **SwiftData API 对齐**：`@Model`、`@Query`、`ModelContext` 与 `ModelContainer` 与 SwiftData 一致。
+- **GRDB**：底层使用 SQLite ，这基本与 SwiftData 后端一致。
+
+## 安装 (Swift Package Manager)
+
+在项目的 `Package.swift` 中添加以下依赖：
+
+```swift
+dependencies: [
+    .package(url: "https://github.com/zxss702/JsonData.git", branch: "main")
+]
+```
+
+将 `JsonData` 添加到对应 Target 的依赖中：
+
+```swift
+targets: [
+    .target(
+        name: "YourApp",
+        dependencies: ["JsonData"] // 若想在 Apple 平台中使用 GRDB 驱动的 JsonDataCore，请在此替换。
+    )
+]
+```
+
+## 快速上手
+
+### 1. 定义你的数据模型
+使用与 SwiftData 完全一样的 `@Model` 宏，无需繁琐的数据库建表语句：
+
+```swift
+import JsonData // 只有这里有差异！！
+
+@Model
+public final class TodoItem {
+    @Attribute(.unique) public var id: UUID
+    public var title: String
+    public var isCompleted: Bool
+    public var createdAt: Date
+    
+    public init(title: String) {
+        self.id = UUID()
+        self.title = title
+        self.isCompleted = false
+        self.createdAt = Date()
+    }
+}
+```
+
+### 2. 配置与初始化容器
+在应用启动时（或 SwiftUI 的入口处）初始化你的数据容器：
+
+> 我非常推荐使用全局变量。
+
+```swift
+// 创建内存数据库（测试用）或持久化 SQLite 数据库
+let container = try ModelContainer(for: TodoItem.self)
+let context = ModelContext(container)
+```
+
+### 3. 数据增删改查
+类型安全的 `Predicate` 查询机制：
+
+```swift
+// 插入新数据
+let newItem = TodoItem(title: "Learn JsonData")
+context.insert(newItem)
+try? context.save()
+
+// 查询数据
+let descriptor = FetchDescriptor<TodoItem>(
+    predicate: #Predicate { $0.isCompleted == false }, // 基本一致，但是支持的没有 SwiftData 用的 Foundation 的 Predicate 全面，JsonDataCore 的 Predicate 是内部重新实现的。
+    sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
+)
+
+let pendingTodos = try context.fetch(descriptor)
+```
+
+### 4. 响应式 UI (SwiftUI / SkipUI)
+如果你在编写界面，利用原生的 `@Query` 语法享受数据响应式刷新的黑魔法：
+
+```swift
+import SwiftUI
+import JsonData
+
+struct TodoListView: View {
+    @Environment(\.modelContext) private var context
+    
+    // 数据一旦改变，列表将自动刷新
+    @Query(sort: [SortDescriptor(\.createdAt)]) 
+    var todos: [TodoItem]
+    
+    var body: some View {
+        List(todos) { todo in
+            Text(todo.title)
+        }
+    }
+}
+```
+
+> **注意：** 在非 SwiftUI 或 Skip.io 环境（如服务端业务流）中使用时，需要手动在初始化时向 `@Query` 传入参数：`@Query(context: ModelContext.shared)`。
+
+## 参与贡献
+我们非常欢迎你为 JsonData 提交代码或提出宝贵建议！在提交代码前，请务必阅读我们的 [贡献指南 (CONTRIBUTING.md)](CONTRIBUTING.md)。
+
+## 开源协议
+本项目采用 **MPL-2.0 (Mozilla Public License 2.0)** 协议开源。
+
+这意味着：
+- **您可以自由地**将本框架用于您的商业闭源项目中（无需将您的 App 开源）。
+- **但如果您直接修改了本框架的源码**，您必须将这些针对本框架的修改以 MPL-2.0 协议开源回馈给社区。我们鼓励大家共同将 JsonData 维护得更好！

@@ -45,4 +45,6 @@ JsonData 的诞生是为了给全平台 Swift 生态提供一份真正等价于 
    ```
 5. Commit 改动并提交 PR。
 
+我导出了 SwiftData 的 API，可以查看 SwiftData.swiftinterface.txt
+
 感谢您为构建跨平台 Swift 繁荣生态做出的贡献！我们期待您的代码。

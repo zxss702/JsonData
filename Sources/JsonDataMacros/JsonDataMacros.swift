@@ -20,6 +20,7 @@ private struct PersistentStoredProperty {
     struct RelationshipInfo {
         let deleteRule: String
         let destinationType: String
+        let inverseName: String?
     }
 
     var columnKind: String {
@@ -114,16 +115,26 @@ private extension VariableDeclSyntax {
                     }
                 } else if attrName == "Relationship" || attrName.hasSuffix(".Relationship") {
                     var deleteRule = ".nullify"
+                    var inverseName: String? = nil
                     if let arguments = attribute.arguments?.as(LabeledExprListSyntax.self) {
                         for arg in arguments {
                             if arg.label?.text == "deleteRule" {
                                 let expr = arg.expression.trimmedDescription
                                 if expr.hasSuffix(".cascade") || expr == "cascade" { deleteRule = ".cascade" }
                                 else if expr.hasSuffix(".deny") || expr == "deny" { deleteRule = ".deny" }
+                            } else if arg.label?.text == "inverse" {
+                                let expr = arg.expression.trimmedDescription
+                                if expr.hasPrefix("\\.") {
+                                    inverseName = String(expr.dropFirst(2))
+                                } else if let dotIndex = expr.lastIndex(of: ".") {
+                                    inverseName = String(expr[expr.index(after: dotIndex)...])
+                                }
                             }
                         }
                     }
-                    relationshipInfo = PersistentStoredProperty.RelationshipInfo(deleteRule: deleteRule, destinationType: baseType)
+                    let isRelArray = baseType.hasPrefix("[") && baseType.hasSuffix("]")
+                    let destType = isRelArray ? String(baseType.dropFirst().dropLast()) : baseType
+                    relationshipInfo = PersistentStoredProperty.RelationshipInfo(deleteRule: deleteRule, destinationType: destType, inverseName: inverseName)
                 }
             }
 
@@ -217,7 +228,8 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
             let relationshipVariables = variables.filter { $0.relationshipInfo != nil }
             let relationshipEntries = relationshipVariables.map { variable in
                 let info = variable.relationshipInfo!
-                return "_JsonDataRelationshipInfo(propertyName: \"\(variable.name)\", deleteRule: \(info.deleteRule), destinationType: \(info.destinationType).self)"
+                let inverseArg = info.inverseName != nil ? ", inverseName: \"\(info.inverseName!)\"" : ""
+                return "_JsonDataRelationshipInfo(propertyName: \"\(variable.name)\", deleteRule: \(info.deleteRule), destinationType: \(info.destinationType).self\(inverseArg))"
             }.joined(separator: ",\n")
             
             let relationshipsDecl: String
@@ -230,6 +242,45 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                 ]
                 """
             }
+            
+            func extractProperties(from macro: MacroExpansionDeclSyntax) -> [[String]] {
+                var groups: [[String]] = []
+                for arg in macro.arguments {
+                    if let arrayExpr = arg.expression.as(ArrayExprSyntax.self) {
+                        var props: [String] = []
+                        for element in arrayExpr.elements {
+                            if let keyPathExpr = element.expression.as(KeyPathExprSyntax.self) {
+                                let str = keyPathExpr.trimmedDescription.replacingOccurrences(of: "\\", with: "").replacingOccurrences(of: ".", with: "")
+                                props.append(str)
+                            }
+                        }
+                        groups.append(props)
+                    }
+                }
+                return groups
+            }
+            
+            let indexMacros = declaration.memberBlock.members.compactMap { $0.decl.as(MacroExpansionDeclSyntax.self) }.filter { $0.macroName.text == "Index" }
+            var indexGroups: [[String]] = []
+            for m in indexMacros { indexGroups.append(contentsOf: extractProperties(from: m)) }
+            
+            let indexEntries = indexGroups.map { "_JsonDataIndexInfo(properties: \($0))" }.joined(separator: ",\n")
+            let indexesDecl = indexEntries.isEmpty ? "internal static let _jsonDataIndexes: [_JsonDataIndexInfo] = []" : """
+            internal static let _jsonDataIndexes: [_JsonDataIndexInfo] = [
+            \(indexEntries)
+            ]
+            """
+            
+            let uniqueMacros = declaration.memberBlock.members.compactMap { $0.decl.as(MacroExpansionDeclSyntax.self) }.filter { $0.macroName.text == "Unique" }
+            var uniqueGroups: [[String]] = []
+            for m in uniqueMacros { uniqueGroups.append(contentsOf: extractProperties(from: m)) }
+            
+            let uniqueEntries = uniqueGroups.map { "_JsonDataUniqueInfo(properties: \($0))" }.joined(separator: ",\n")
+            let uniquesDecl = uniqueEntries.isEmpty ? "internal static let _jsonDataUniques: [_JsonDataUniqueInfo] = []" : """
+            internal static let _jsonDataUniques: [_JsonDataUniqueInfo] = [
+            \(uniqueEntries)
+            ]
+            """
             let resolverBranches = variables.map { variable in
                 "if keyPath == \\\(typeName).\(variable.name) { return \"\(variable.name)\" }"
             }.joined(separator: "\n")
@@ -248,10 +299,39 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                 }
                 """
             }
+            
+            let setValueBranches = variables.map { variable in
+                let isArray = variable.baseType.hasPrefix("[") && variable.baseType.hasSuffix("]") && !variable.baseType.contains(":")
+                let elementType = isArray ? String(variable.baseType.dropFirst().dropLast()) : variable.baseType
+                let arrayBlock = isArray ? """
+                    if let val = value as? \(elementType) {
+                        var current = self.\(variable.name)
+                        current.append(val)
+                        self.\(variable.name) = current
+                    } else 
+                """ : ""
+                
+                return """
+                if propertyName == "\(variable.name)" {
+                    \(arrayBlock)if let val = value as? \(variable.type) {
+                        self.\(variable.name) = val
+                    } else if value == nil\(variable.isOptional ? "" : ", false") {
+                    }
+                    return
+                }
+                """
+            }.joined(separator: "\n")
+            
+            let setValueDecl = """
+            public func _jsonDataSetValue(_ value: Any?, forPropertyName propertyName: String) {
+                \(setValueBranches)
+            }
+            """
 
             return [
+                "@ObservationIgnored public var _isSyncingInverse: Bool = false",
                 "@ObservationIgnored private let _observationRegistrar = ObservationRegistrar()",
-                "@ObservationIgnored public var persistentModelID: String = UUID().uuidString",
+                "@ObservationIgnored public var persistentModelID: PersistentIdentifier = PersistentIdentifier(id: UUID().uuidString)",
                 "@ObservationIgnored public weak var _modelContext: ModelContext? = nil",
                 "@ObservationIgnored public var _isFault: Bool = false",
                 "@ObservationIgnored public var _isFaulting: Bool = false",
@@ -286,9 +366,9 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                 """,
                 """
                 \(raw: {
-                    var initBody = "self.persistentModelID = \"\"\n"
+                    var initBody = "self.persistentModelID = PersistentIdentifier(id: \"\")\n"
                     for variable in variables {
-                        initBody += "self._\(variable.name) = Field()\n"
+                        initBody += "self._\(variable.name) = Field<\(variable.type)>()\n"
                     }
                     return "public required init() {\n\(initBody)}"
                 }())
@@ -296,9 +376,46 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                 """
                 public required init(from decoder: Decoder) throws {
                     let container = try decoder.container(keyedBy: CodingKeys.self)
-                    self.persistentModelID = try container.decode(String.self, forKey: .persistentModelID)
-                    \(raw: variables.map { variable in
-                        "self._\(variable.name) = try container.decode(Field<\(variable.type)>.self, forKey: .\(variable.name))"
+                    self.persistentModelID = try container.decode(PersistentIdentifier.self, forKey: .persistentModelID)
+                    \(raw: persistentVariables.map { variable in
+                        if variable.attributeOptions.contains(where: { $0.contains(".externalStorage") }) {
+                            return """
+                                if let context = decoder.userInfo[.modelContext] as? ModelContext, let ref = try? container.decode(String.self, forKey: .\(variable.name)) {
+                                    if let data = try? context._loadExternalData(from: ref) as? \(variable.type) {
+                                        self._\(variable.name) = Field(wrappedValue: data)
+                                    } else {
+                                        self._\(variable.name) = Field()
+                                    }
+                                } else {
+                                    self._\(variable.name) = try container.decode(Field<\(variable.type)>.self, forKey: .\(variable.name))
+                                }
+                                """
+                        } else {
+                            return "self._\(variable.name) = try container.decode(Field<\(variable.type)>.self, forKey: .\(variable.name))"
+                        }
+                    }.joined(separator: "\n"))
+                    \(raw: variables.filter { $0.attributeOptions.contains(".ephemeral") }.map { variable in
+                        "self._\(variable.name) = Field<\(variable.type)>()"
+                    }.joined(separator: "\n"))
+                }
+                """,
+                """
+                public func encode(to encoder: Encoder) throws {
+                    var container = encoder.container(keyedBy: CodingKeys.self)
+                    try container.encode(self.persistentModelID, forKey: .persistentModelID)
+                    \(raw: persistentVariables.map { variable in
+                        if variable.attributeOptions.contains(where: { $0.contains(".externalStorage") }) {
+                            return """
+                                if let context = encoder.userInfo[.modelContext] as? ModelContext, let data = self._\(variable.name).value {
+                                    let ref = try context._saveExternalData(data, modelID: self.persistentModelID, propertyName: "\(variable.name)")
+                                    try container.encode(ref, forKey: .\(variable.name))
+                                } else {
+                                    try container.encode(self._\(variable.name), forKey: .\(variable.name))
+                                }
+                                """
+                        } else {
+                            return "try container.encode(self._\(variable.name), forKey: .\(variable.name))"
+                        }
                     }.joined(separator: "\n"))
                 }
                 """,
@@ -316,6 +433,15 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                 """,
                 """
                 \(raw: resolverDecl)
+                """,
+                """
+                \(raw: setValueDecl)
+                """,
+                """
+                \(raw: indexesDecl)
+                """,
+                """
+                \(raw: uniquesDecl)
                 """
             ]
         }
@@ -393,7 +519,11 @@ private struct PredicateClosureParser {
     }
 
     mutating func parseExpr(_ expr: ExprSyntax) throws {
-        if let infix = expr.as(InfixOperatorExprSyntax.self) {
+        if let tuple = expr.as(TupleExprSyntax.self), tuple.elements.count == 1, let first = tuple.elements.first {
+            sql += "("
+            try parseExpr(first.expression)
+            sql += ")"
+        } else if let infix = expr.as(InfixOperatorExprSyntax.self) {
             sql += "("
             try parseExpr(infix.leftOperand)
             sql += " "
@@ -428,6 +558,32 @@ private struct PredicateClosureParser {
             } else {
                 throw MacroError("Unsupported prefix operator \\(op)")
             }
+        } else if let call = expr.as(FunctionCallExprSyntax.self),
+                  let member = call.calledExpression.as(MemberAccessExprSyntax.self),
+                  let base = member.base,
+                  let memberAccess = base.as(MemberAccessExprSyntax.self),
+                  let memberBase = memberAccess.base,
+                  memberBase.trimmedDescription == closureParamName {
+            
+            let propName = memberAccess.declName.baseName.text
+            let funcName = member.declName.baseName.text
+            
+            guard let argExpr = call.arguments.first?.expression else {
+                throw MacroError("Missing argument for \\(funcName)")
+            }
+            
+            if funcName == "contains" {
+                sql += "\\\"\(propName)\\\" LIKE ('%' || ? || '%')"
+                arguments.append(argExpr.trimmedDescription)
+            } else if funcName == "hasPrefix" || funcName == "starts" {
+                sql += "\\\"\(propName)\\\" LIKE (? || '%')"
+                arguments.append(argExpr.trimmedDescription)
+            } else if funcName == "hasSuffix" || funcName == "ends" {
+                sql += "\\\"\(propName)\\\" LIKE ('%' || ?)"
+                arguments.append(argExpr.trimmedDescription)
+            } else {
+                throw MacroError("Unsupported function \(funcName)")
+            }
         } else {
             sql += "?"
             arguments.append(expr.trimmedDescription)
@@ -435,13 +591,34 @@ private struct PredicateClosureParser {
     }
 }
 
+public struct IndexMacro: DeclarationMacro {
+    public static func expansion(
+        of node: some FreestandingMacroExpansionSyntax,
+        in context: some MacroExpansionContext
+    ) throws -> [DeclSyntax] {
+        return []
+    }
+}
+
+public struct UniqueMacro: DeclarationMacro {
+    public static func expansion(
+        of node: some FreestandingMacroExpansionSyntax,
+        in context: some MacroExpansionContext
+    ) throws -> [DeclSyntax] {
+        return []
+    }
+}
+
 @main
 struct JsonDataPlugin: CompilerPlugin {
+
     let providingMacros: [Macro.Type] = [
         ModelMacro.self,
         TransientMacro.self,
         AttributeMacro.self,
         RelationshipMacro.self,
         PredicateMacro.self,
+        IndexMacro.self,
+        UniqueMacro.self
     ]
 }

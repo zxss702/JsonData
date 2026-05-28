@@ -20,17 +20,17 @@ final class CrossPlatformSmokeTest: XCTestCase {
         try insertContext.save()
 
         let readContext = ModelContext(container)
-        let reloaded: LinuxWindowsSmokeAgentRecord? = readContext.model(for: String(describing: record.persistentModelID))
+        let reloaded: LinuxWindowsSmokeAgentRecord? = readContext.model(for: record.persistentModelID)
         XCTAssertEqual(reloaded?.name, "hello")
 
         let deleteContext = ModelContext(container)
-        let toDelete: LinuxWindowsSmokeAgentRecord? = deleteContext.model(for: String(describing: record.persistentModelID))
+        let toDelete: LinuxWindowsSmokeAgentRecord? = deleteContext.model(for: record.persistentModelID)
         deleteContext.delete(try XCTUnwrap(toDelete))
         try? deleteContext.save()
         try deleteContext.save()
 
         let verifyContext = ModelContext(container)
-        let deleted: LinuxWindowsSmokeAgentRecord? = verifyContext.model(for: String(describing: record.persistentModelID))
+        let deleted: LinuxWindowsSmokeAgentRecord? = verifyContext.model(for: record.persistentModelID)
         XCTAssertNil(deleted)
     }
 

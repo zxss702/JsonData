@@ -5,7 +5,8 @@ import CompilerPluginSupport
 let package = Package(
     name: "JsonData",
     platforms: [
-        .macOS(.v13)
+        .macOS(.v15),
+        .iOS(.v18)
     ],
     products: [
         .library(name: "JsonData", targets: ["JsonData"]),

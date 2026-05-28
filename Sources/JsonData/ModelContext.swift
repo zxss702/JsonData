@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 #if !canImport(SwiftData)
 import GRDB
@@ -15,17 +16,33 @@ public final class ModelContext: @unchecked Sendable {
     public static let shared = ModelContext()
     public let baseURL: URL
 
-    private let identityMapLock = NSLock()
-    private var identityMap: [String: WeakRef] = [:]
+    private let identityMapLock = Mutex(())
+    private var identityMap: [PersistentIdentifier: WeakRef] = [:]
     
-    private var insertedModels: [String: any PersistentModel] = [:]
-    private var changedModels: [String: any PersistentModel] = [:]
-    private var deletedModels: [String: any PersistentModel] = [:]
+    private var insertedModels: [PersistentIdentifier: any PersistentModel] = [:]
+    private var changedModels: [PersistentIdentifier: any PersistentModel] = [:]
+    private var deletedModels: [PersistentIdentifier: any PersistentModel] = [:]
+    
+    public var autosaveEnabled: Bool = true
+    private var pendingSaveTask: DispatchWorkItem?
+    private let pendingSaveLock = Mutex(())
     
     public var hasChanges: Bool {
-        identityMapLock.lock()
-        defer { identityMapLock.unlock() }
-        return !insertedModels.isEmpty || !changedModels.isEmpty || !deletedModels.isEmpty
+        identityMapLock.withLock { _ in
+            !insertedModels.isEmpty || !changedModels.isEmpty || !deletedModels.isEmpty
+        }
+    }
+
+    private func _scheduleAutosave() {
+        guard autosaveEnabled else { return }
+        pendingSaveLock.withLock { _ in
+            pendingSaveTask?.cancel()
+            let task = DispatchWorkItem { [weak self] in
+                try? self?.save()
+            }
+            pendingSaveTask = task
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: task)
+        }
     }
 
     private let databaseQueue: DatabaseQueue
@@ -82,22 +99,67 @@ public final class ModelContext: @unchecked Sendable {
         }
     }
 
-    private func _ensureTable(for type: any PersistentModel.Type, in db: Database? = nil) throws {
+    private let tableInitLock = Mutex(())
+    private var initializedTables: Set<String> = []
+
+    private func _ensureTable<T: PersistentModel>(for type: T.Type, in db: Database? = nil) throws {
         let tableName = _tableName(for: type)
+        
+        let alreadyInit = tableInitLock.withLock { _ -> Bool in
+            if initializedTables.contains(tableName) { return true }
+            initializedTables.insert(tableName)
+            return false
+        }
+        
+        if alreadyInit { return }
+        
         let columns = _columns(for: type)
         
         let definitions = ["id TEXT PRIMARY KEY NOT NULL", "payload BLOB NOT NULL"] + columns.map { column in
             let sqlType = _sqlType(for: column.kind)
             let nullability = column.isOptional ? "" : " NOT NULL"
             let unique = column.options.contains(.unique) ? " UNIQUE" : ""
-            return "\(column.columnName) \(sqlType)\(nullability)\(unique)"
+            return "\(_quote(identifier: column.columnName)) \(sqlType)\(nullability)\(unique)"
         }
         let sql = "CREATE TABLE IF NOT EXISTS \(_quote(identifier: tableName)) (\(definitions.joined(separator: ", ")) )"
         
-        if let db {
+        let performMigration: (Database) throws -> Void = { db in
             try db.execute(sql: sql)
+            let existingColumns = try db.columns(in: tableName).map { $0.name }
+            for column in columns {
+                if !existingColumns.contains(column.columnName) {
+                    let sqlType = self._sqlType(for: column.kind)
+                    // In SQLite, adding a NOT NULL column requires a DEFAULT value
+                    let defaultVal = column.isOptional ? "" : " DEFAULT \(self._sqlDefault(for: column.kind))"
+                    let nullability = column.isOptional ? "" : " NOT NULL"
+                    let alterSQL = "ALTER TABLE \(self._quote(identifier: tableName)) ADD COLUMN \(self._quote(identifier: column.columnName)) \(sqlType)\(nullability)\(defaultVal)"
+                    try db.execute(sql: alterSQL)
+                }
+            }
+            
+            if let schemaType = type as? any _JsonDataSchemaProviding.Type {
+                for index in schemaType._jsonDataIndexes {
+                    let indexName = "idx_\(tableName)_\(index.properties.joined(separator: "_"))"
+                    let cols = index.properties.map(self._quote(identifier:)).joined(separator: ", ")
+                    try db.execute(sql: "CREATE INDEX IF NOT EXISTS \(self._quote(identifier: indexName)) ON \(self._quote(identifier: tableName)) (\(cols))")
+                }
+                
+                for unique in schemaType._jsonDataUniques {
+                    let indexName = "idx_uniq_\(tableName)_\(unique.properties.joined(separator: "_"))"
+                    let cols = unique.properties.map(self._quote(identifier:)).joined(separator: ", ")
+                    try db.execute(sql: "CREATE UNIQUE INDEX IF NOT EXISTS \(self._quote(identifier: indexName)) ON \(self._quote(identifier: tableName)) (\(cols))")
+                }
+            }
+        }
+
+        if let db {
+            try performMigration(db)
         } else {
-            try databaseQueue.write { try $0.execute(sql: sql) }
+            try databaseQueue.write { try performMigration($0) }
+        }
+        
+        _ = tableInitLock.withLock { _ in
+            initializedTables.insert(tableName)
         }
     }
 
@@ -111,6 +173,21 @@ public final class ModelContext: @unchecked Sendable {
             return "REAL"
         case .data:
             return "BLOB"
+        }
+    }
+
+
+
+    private func _sqlDefault(for kind: _JsonDataColumnKind) -> String {
+        switch kind {
+        case .string, .uuid, .date, .codableJSON:
+            return "''"
+        case .integer, .bool:
+            return "0"
+        case .double:
+            return "0.0"
+        case .data:
+            return "x''"
         }
     }
 
@@ -171,18 +248,21 @@ public final class ModelContext: @unchecked Sendable {
     }
 
     public func _modelDidChange(_ model: any PersistentModel) {
-        identityMapLock.lock()
-        defer { identityMapLock.unlock() }
-        let id = model.persistentModelID
-        if insertedModels[id] == nil && deletedModels[id] == nil {
-            changedModels[id] = model
+        identityMapLock.withLock { _ in
+            let id = model.persistentModelID
+            if insertedModels[id] == nil && deletedModels[id] == nil {
+                changedModels[id] = model
+            }
         }
+        _scheduleAutosave()
     }
 
     private func _saveModel(_ model: any PersistentModel, in db: Database) throws {
         let modelType = type(of: model)
         try _ensureTable(for: modelType, in: db)
-        let payload = try JSONEncoder().encode(AnyEncodable(model))
+        let encoder = JSONEncoder()
+        encoder.userInfo[.modelContext] = self
+        let payload = try encoder.encode(AnyEncodable(model))
         let tableName = _tableName(for: modelType)
         let columnValues = try _extractColumnValues(from: model)
         
@@ -197,22 +277,22 @@ public final class ModelContext: @unchecked Sendable {
             arguments.append(columnValues[column.columnName] ?? nil)
         }
         
-        let updates = (["payload = ?"] + cols.map { "\(_quote(identifier: $0.columnName)) = ?" }).joined(separator: ", ")
-        let sql = "INSERT INTO \(_quote(identifier: tableName)) (\(columns.map(_quote(identifier:)).joined(separator: ", "))) VALUES (\(placeholders.joined(separator: ", "))) ON CONFLICT(id) DO UPDATE SET \(updates)"
-        let updateArguments = StatementArguments(arguments + [payload] + cols.map { columnValues[$0.columnName] ?? nil })
+        let sql = "INSERT OR REPLACE INTO \(_quote(identifier: tableName)) (\(columns.map(_quote(identifier:)).joined(separator: ", "))) VALUES (\(placeholders.joined(separator: ", ")))"
+        let updateArguments = StatementArguments(arguments)
         try db.execute(sql: sql, arguments: updateArguments)
     }
 
     public func save() throws {
-        identityMapLock.lock()
-        let toInsert = insertedModels.values
-        let toUpdate = changedModels.values
-        let toDelete = deletedModels.values
-        
-        insertedModels.removeAll()
-        changedModels.removeAll()
-        deletedModels.removeAll()
-        identityMapLock.unlock()
+        let (toInsert, toUpdate, toDelete) = identityMapLock.withLock { _ -> ([any PersistentModel], [any PersistentModel], [any PersistentModel]) in
+            let inserts = Array(insertedModels.values)
+            let updates = Array(changedModels.values)
+            let deletes = Array(deletedModels.values)
+
+            insertedModels.removeAll()
+            changedModels.removeAll()
+            deletedModels.removeAll()
+            return (inserts, updates, deletes)
+        }
         
         if toInsert.isEmpty && toUpdate.isEmpty && toDelete.isEmpty {
             return
@@ -222,6 +302,16 @@ public final class ModelContext: @unchecked Sendable {
             for model in toDelete {
                 let modelType = type(of: model)
                 try _ensureTable(for: modelType, in: db)
+                
+                if let schemaType = modelType as? any _JsonDataSchemaProviding.Type {
+                    let extDir = baseURL.appendingPathComponent(".externalStorage")
+                    for column in schemaType._jsonDataColumns where column.options.contains(.externalStorage) {
+                        let filename = "\(model.persistentModelID)_\(column.propertyName).dat"
+                        let fileUrl = extDir.appendingPathComponent(filename)
+                        try? FileManager.default.removeItem(at: fileUrl)
+                    }
+                }
+                
                 try db.execute(
                     sql: "DELETE FROM \(_quote(identifier: _tableName(for: modelType))) WHERE id = ?",
                     arguments: [model.persistentModelID]
@@ -240,31 +330,34 @@ public final class ModelContext: @unchecked Sendable {
     }
 
     public func insert<T: PersistentModel>(_ model: T) {
-        identityMapLock.lock()
-        identityMap[model.persistentModelID] = WeakRef(model)
-        insertedModels[model.persistentModelID] = model
-        identityMapLock.unlock()
+        identityMapLock.withLock { _ in
+            identityMap[model.persistentModelID] = WeakRef(model)
+            insertedModels[model.persistentModelID] = model
+        }
 
         model._modelContext = self
         model._isFault = false
+        _scheduleAutosave()
     }
 
     public func delete<T: PersistentModel>(_ model: T) {
-        identityMapLock.lock()
-        let id = model.persistentModelID
-        
-        if deletedModels[id] != nil {
-            identityMapLock.unlock()
-            return // prevent infinite recursion
+        let shouldReturn = identityMapLock.withLock { _ -> Bool in
+            let id = model.persistentModelID
+            if deletedModels[id] != nil {
+                return true // prevent infinite recursion
+            }
+            
+            identityMap.removeValue(forKey: id)
+            insertedModels.removeValue(forKey: id)
+            changedModels.removeValue(forKey: id)
+            deletedModels[id] = model
+            return false
         }
         
-        identityMap.removeValue(forKey: id)
-        insertedModels.removeValue(forKey: id)
-        changedModels.removeValue(forKey: id)
-        deletedModels[id] = model
-        identityMapLock.unlock()
+        if shouldReturn { return }
         
         _processCascadeDelete(for: model)
+        _scheduleAutosave()
     }
     
     private func _processCascadeDelete(for model: any PersistentModel) {
@@ -307,19 +400,19 @@ public final class ModelContext: @unchecked Sendable {
         try _ensureTable(for: T.self)
         let tableName = _tableName(for: T.self)
         let query = try _buildFetchQuery(for: T.self, descriptor: descriptor, limit: effectiveLimit, tableName: tableName)
-        let rows: [(String, Data)] = try databaseQueue.read { db in
+        let rows: [(PersistentIdentifier, Data)] = try databaseQueue.read { db in
             let rows = try Row.fetchAll(db, sql: query.sql, arguments: query.arguments)
-            return try rows.map { row in
-                let id: String = row["id"]
+            return rows.map { row in
+                let idStr: String = row["id"]
                 let payload: Data = row["payload"]
-                return (id, payload)
+                return (PersistentIdentifier(id: idStr), payload)
             }
         }
 
         var results: [T] = []
-        identityMapLock.lock()
-        _purgeStaleEntries()
-        defer { identityMapLock.unlock() }
+        identityMapLock.withLock { _ in
+            _purgeStaleEntries()
+        }
 
         for (id, payload) in rows {
             if let ref = identityMap[id], let cached = ref.value as? T {
@@ -337,7 +430,9 @@ public final class ModelContext: @unchecked Sendable {
                 continue
             }
 
-            let model = try JSONDecoder().decode(T.self, from: payload)
+            let decoder = JSONDecoder()
+            decoder.userInfo[.modelContext] = self
+            let model = try decoder.decode(T.self, from: payload)
             model._modelContext = self
             model._isFault = false
             identityMap[id] = WeakRef(model)
@@ -357,39 +452,39 @@ public final class ModelContext: @unchecked Sendable {
         return ValueObservation.tracking { db in
             let query = try self._buildFetchQuery(for: T.self, descriptor: descriptor, limit: effectiveLimit, tableName: tableName)
             let rows = try Row.fetchAll(db, sql: query.sql, arguments: query.arguments)
-            let rawData = try rows.map { row -> (String, Data) in
-                let id: String = row["id"]
-                let payload: Data = row["payload"]
-                return (id, payload)
-            }
             
-            var results: [T] = []
-            self.identityMapLock.lock()
-            self._purgeStaleEntries()
-            defer { self.identityMapLock.unlock() }
+            let results = self.identityMapLock.withLock { _ -> [T] in
+                var results = [T]()
+                for row in rows {
+                    let idStr: String = row["id"]
+                    let id = PersistentIdentifier(id: idStr)
+                    let payload: Data = row["payload"]
+                    
+                    if let ref = self.identityMap[id], let cached = ref.value as? T {
+                        results.append(cached)
+                        continue
+                    }
+                    
+                    if descriptor.predicate == nil {
+                        let fault = T()
+                        fault.persistentModelID = id
+                        fault._isFault = true
+                        fault._modelContext = self
+                        self.identityMap[id] = WeakRef(fault)
+                        results.append(fault)
+                        continue
+                    }
 
-            for (id, payload) in rawData {
-                if let ref = self.identityMap[id], let cached = ref.value as? T {
-                    results.append(cached)
-                    continue
+                    let decoder = JSONDecoder()
+                    decoder.userInfo[.modelContext] = self
+                    if let model = try? decoder.decode(T.self, from: payload) {
+                        model._modelContext = self
+                        model._isFault = false
+                        self.identityMap[id] = WeakRef(model)
+                        results.append(model)
+                    }
                 }
-
-                if descriptor.predicate == nil {
-                    let fault = T()
-                    fault.persistentModelID = id
-                    fault._isFault = true
-                    fault._modelContext = self
-                    self.identityMap[id] = WeakRef(fault)
-                    results.append(fault)
-                    continue
-                }
-
-                if let model = try? JSONDecoder().decode(T.self, from: payload) {
-                    model._modelContext = self
-                    model._isFault = false
-                    self.identityMap[id] = WeakRef(model)
-                    results.append(model)
-                }
+                return results
             }
             return results
         }
@@ -405,36 +500,40 @@ public final class ModelContext: @unchecked Sendable {
         return obs.start(in: databaseQueue, onError: onError, onChange: onChange)
     }
 
-    public func model<T: PersistentModel>(for id: String) -> T? {
-        identityMapLock.lock()
-        if let ref = identityMap[id], let cached = ref.value as? T, !cached._isFault, !cached._isFaulting {
-            identityMapLock.unlock()
+    public func model<T: PersistentModel>(for id: PersistentIdentifier) -> T? {
+        if let cached = identityMapLock.withLock({ _ -> T? in
+            if let ref = identityMap[id], let cached = ref.value as? T, !cached._isFault, !cached._isFaulting {
+                return cached
+            }
+            return nil
+        }) {
             return cached
         }
-        identityMapLock.unlock()
 
         do {
             guard let model: T = try _loadModel(for: id) else { return nil }
-            identityMapLock.lock()
-            identityMap[id] = WeakRef(model)
-            identityMapLock.unlock()
+            identityMapLock.withLock { _ in
+                identityMap[id] = WeakRef(model)
+            }
             return model
         } catch {
             return nil
         }
     }
 
-    private func _loadModel<T: PersistentModel>(for id: String) throws -> T? {
+    private func _loadModel<T: PersistentModel>(for id: PersistentIdentifier) throws -> T? {
         try _ensureTable(for: T.self)
         let payload: Data? = try databaseQueue.read { db in
             try Data.fetchOne(
                 db,
                 sql: "SELECT payload FROM \(_quote(identifier: _tableName(for: T.self))) WHERE id = ?",
-                arguments: [id]
+                arguments: [id.id]
             )
         }
         guard let payload else { return nil }
-        let model = try JSONDecoder().decode(T.self, from: payload)
+        let decoder = JSONDecoder()
+        decoder.userInfo[.modelContext] = self
+        let model = try decoder.decode(T.self, from: payload)
         model._modelContext = self
         model._isFault = false
         return model
@@ -446,9 +545,9 @@ public final class ModelContext: @unchecked Sendable {
             model._copy(from: fullModel)
             model._modelContext = self
             model._isFault = false
-            identityMapLock.lock()
-            identityMap[model.persistentModelID] = WeakRef(model)
-            identityMapLock.unlock()
+            identityMapLock.withLock { _ in
+                identityMap[model.persistentModelID] = WeakRef(model)
+            }
         } catch {
             return
         }
@@ -595,6 +694,27 @@ private struct AnyEncodable: Encodable {
 
     func encode(to encoder: Encoder) throws {
         try encodeImpl(encoder)
+    }
+}
+
+public extension CodingUserInfoKey {
+    static let modelContext = CodingUserInfoKey(rawValue: "modelContext")!
+}
+
+extension ModelContext {
+    public func _saveExternalData(_ data: Data, modelID: PersistentIdentifier, propertyName: String) throws -> String {
+        let extDir = baseURL.appendingPathComponent(".externalStorage")
+        try FileManager.default.createDirectory(at: extDir, withIntermediateDirectories: true)
+        let filename = "\(modelID.id)_\(propertyName).dat"
+        let fileUrl = extDir.appendingPathComponent(filename)
+        try data.write(to: fileUrl)
+        return filename
+    }
+
+    public func _loadExternalData(from filename: String) throws -> Data {
+        let extDir = baseURL.appendingPathComponent(".externalStorage")
+        let fileUrl = extDir.appendingPathComponent(filename)
+        return try Data(contentsOf: fileUrl)
     }
 }
 

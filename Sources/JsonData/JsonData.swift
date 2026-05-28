@@ -5,9 +5,10 @@ import Foundation
 
 @available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
 public extension SwiftData.ModelContext {
-    func model<T>(for persistentModelIDString: String) -> T? where T: SwiftData.PersistentModel {
-        let records = try? fetch(SwiftData.FetchDescriptor<T>())
-        return records?.first(where: { "\($0.persistentModelID)" == persistentModelIDString })
+    func model<T>(for id: PersistentIdentifier) -> T? where T: SwiftData.PersistentModel {
+        if let m: T = self.registeredModel(for: id) { return m }
+        if let m = self.model(for: id) as? T { return m }
+        return nil
     }
 }
 
@@ -22,7 +23,7 @@ public nonisolated extension SwiftData.ModelContainer {
 
 @attached(extension, conformances: PersistentModel, _JsonDataSchemaProviding)
 @attached(memberAttribute)
-@attached(member, names: named(_observationRegistrar), named(_modelContext), named(_isFault), named(_isFaulting), named(access), named(withMutation), named(didChange), named(fault), named(_copy), named(CodingKeys), named(init), named(persistentModelID), named(_jsonDataTableName), named(_jsonDataColumns), named(_jsonDataRelationships), named(_jsonDataPropertyName))
+@attached(member, names: named(_observationRegistrar), named(_modelContext), named(_isFault), named(_isFaulting), named(access), named(withMutation), named(didChange), named(fault), named(_copy), named(CodingKeys), named(init), named(encode), named(persistentModelID), named(_jsonDataTableName), named(_jsonDataColumns), named(_jsonDataRelationships), named(_jsonDataPropertyName), named(_isSyncingInverse), named(_jsonDataSetValue), named(_jsonDataIndexes), named(_jsonDataUniques))
 public macro Model() = #externalMacro(module: "JsonDataMacros", type: "ModelMacro")
 
 @attached(peer)
@@ -56,8 +57,14 @@ public macro Relationship(deleteRule: Schema.Relationship.DeleteRule = .nullify,
 @freestanding(expression)
 public macro Predicate<T>(_ body: (T) -> Bool) -> JsonData.Predicate<T> = #externalMacro(module: "JsonDataMacros", type: "PredicateMacro")
 
+@freestanding(declaration)
+public macro Index<T>(_ groups: [PartialKeyPath<T>]...) = #externalMacro(module: "JsonDataMacros", type: "IndexMacro")
+
+@freestanding(declaration)
+public macro Unique<T>(_ groups: [PartialKeyPath<T>]...) = #externalMacro(module: "JsonDataMacros", type: "UniqueMacro")
+
 public protocol PersistentModel: AnyObject, Codable, Observable {
-    var persistentModelID: String { get set }
+    var persistentModelID: PersistentIdentifier { get set }
     var _modelContext: ModelContext? { get set }
     var _isFault: Bool { get set }
     var _isFaulting: Bool { get set }
@@ -65,6 +72,8 @@ public protocol PersistentModel: AnyObject, Codable, Observable {
     func withMutation<Member, Result>(keyPath: KeyPath<Self, Member>, _ mutation: () throws -> Result) rethrows -> Result
     func fault()
     func _copy(from other: any PersistentModel)
+    func _jsonDataSetValue(_ value: Any?, forPropertyName propertyName: String)
+    var _isSyncingInverse: Bool { get set }
     init()
 }
 
@@ -91,7 +100,7 @@ public struct FetchDescriptor<T: PersistentModel>: @unchecked Sendable {
 }
 
 @propertyWrapper
-public struct Field<Value: Codable>: Codable {
+public struct Field<Value> {
     public var value: Value?
     public var defaultValue: Value?
     
@@ -106,19 +115,7 @@ public struct Field<Value: Codable>: Codable {
         self.value = nil
         self.defaultValue = nil
     }
-    
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        let decoded = try container.decode(Value.self)
-        self.defaultValue = decoded
-        self.value = decoded
-    }
-    
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        try container.encode(value ?? defaultValue!)
-    }
-    
+
     public static subscript<T: PersistentModel>(
         _enclosingInstance instance: T,
         wrapped wrappedKeyPath: ReferenceWritableKeyPath<T, Value>,
@@ -135,10 +132,55 @@ public struct Field<Value: Codable>: Codable {
         set {
             instance.withMutation(keyPath: wrappedKeyPath) {
                 instance.fault()
+                
+                let oldValue = instance[keyPath: storageKeyPath].value
                 instance[keyPath: storageKeyPath].value = newValue
                 
                 if !instance._isFaulting {
                     instance._modelContext?._modelDidChange(instance)
+                    
+                    if !instance._isSyncingInverse,
+                       let schemaType = type(of: instance) as? any _JsonDataSchemaProviding.Type,
+                       let propName = schemaType._jsonDataPropertyName(for: wrappedKeyPath),
+                       let rel = schemaType._jsonDataRelationships.first(where: { $0.propertyName == propName }),
+                       let inverseName = rel.inverseName {
+                        
+                        // Set flag to prevent infinite recursion
+                        instance._isSyncingInverse = true
+                        defer { instance._isSyncingInverse = false }
+                        
+                        // Clear old inverse
+                        if let oldObj = oldValue as? any PersistentModel {
+                            oldObj._isSyncingInverse = true
+                            oldObj._jsonDataSetValue(nil, forPropertyName: inverseName)
+                            oldObj._isSyncingInverse = false
+                        } else if let oldArr = oldValue as? [any PersistentModel] {
+                            for oldObj in oldArr {
+                                oldObj._isSyncingInverse = true
+                                oldObj._jsonDataSetValue(nil, forPropertyName: inverseName)
+                                oldObj._isSyncingInverse = false
+                            }
+                        }
+                        
+                        // Set new inverse
+                        if let newObj = newValue as? any PersistentModel {
+                            newObj._isSyncingInverse = true
+                            // For to-one, we set instance. For to-many, we'd append instance.
+                            // But since _jsonDataSetValue does a direct assignment, we must pass the correct type.
+                            // However, we don't know the exact array type dynamically.
+                            // If the inverse is an array, setting it directly to `instance` will fail the `as? Type` cast.
+                            // To perfectly support bidirectional to-many, _jsonDataSetValue would need `append` logic.
+                            // For now, we attempt to assign directly (works for to-one).
+                            newObj._jsonDataSetValue(instance, forPropertyName: inverseName)
+                            newObj._isSyncingInverse = false
+                        } else if let newArr = newValue as? [any PersistentModel] {
+                            for newObj in newArr {
+                                newObj._isSyncingInverse = true
+                                newObj._jsonDataSetValue(instance, forPropertyName: inverseName)
+                                newObj._isSyncingInverse = false
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -151,9 +193,24 @@ public struct Field<Value: Codable>: Codable {
     }
 }
 
-public nonisolated extension ModelContainer {
-    func freshContext() -> ModelContext {
-        mainContext
+    public nonisolated extension ModelContainer {
+        func freshContext() -> ModelContext {
+            mainContext
+        }
     }
-}
+
+    extension Field: Codable where Value: Codable {
+        public init(from decoder: any Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            let decoded = try container.decode(Value.self)
+            self.defaultValue = decoded
+            self.value = decoded
+        }
+        
+        public func encode(to encoder: any Encoder) throws {
+            var container = encoder.singleValueContainer()
+            try container.encode(value ?? defaultValue!)
+        }
+    }
 #endif
+

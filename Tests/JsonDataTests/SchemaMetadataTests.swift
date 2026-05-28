@@ -1,7 +1,7 @@
-#if !canImport(SwiftData)
+
 import Foundation
 import XCTest
-@testable import JsonData
+@testable import JsonDataCore
 
 final class SchemaMetadataTests: XCTestCase {
     func testModelMacroGeneratesSchemaMetadata() {
@@ -54,4 +54,4 @@ private final class MetadataNote {
     var payload: [String: String] = [:]
     @Transient var transientCache: String? = nil
 }
-#endif
+

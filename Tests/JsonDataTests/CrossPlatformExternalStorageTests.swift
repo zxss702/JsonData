@@ -1,9 +1,9 @@
 import Foundation
 import XCTest
-#if canImport(SwiftData)
-import SwiftData
-#endif
-@testable import JsonData
+
+
+
+@testable import JsonDataCore
 
 @Model
 private final class ExternalStorageRecord {
@@ -35,7 +35,7 @@ final class CrossPlatformExternalStorageTests: XCTestCase {
         try context.save()
 
         // Verify the file was created on disk
-        #if !canImport(SwiftData)
+        
         let files = try FileManager.default.contentsOfDirectory(atPath: extDir.path)
         XCTAssertEqual(files.count, 1, "There should be exactly one external storage file")
         XCTAssertTrue(files[0].contains("_largeData.dat"))
@@ -43,7 +43,7 @@ final class CrossPlatformExternalStorageTests: XCTestCase {
         let fileURL = extDir.appendingPathComponent(files[0])
         let storedData = try Data(contentsOf: fileURL)
         XCTAssertEqual(storedData, sampleData, "Stored data should match original")
-        #endif
+        
 
         // 2. Fetch data
         let readContext = ModelContext(container)
@@ -59,10 +59,10 @@ final class CrossPlatformExternalStorageTests: XCTestCase {
         deleteContext.delete(deleteResults[0])
         try deleteContext.save()
 
-        #if !canImport(SwiftData)
+        
         let filesAfterDelete = (try? FileManager.default.contentsOfDirectory(atPath: extDir.path)) ?? []
         XCTAssertEqual(filesAfterDelete.count, 0, "External file should be deleted")
-        #endif
+        
     }
 
     private func makeTemporaryDirectory(prefix: String) throws -> URL {

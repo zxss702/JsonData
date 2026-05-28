@@ -1,9 +1,9 @@
 import Foundation
 import XCTest
-#if canImport(SwiftData)
-import SwiftData
-#endif
-@testable import JsonData
+
+
+
+@testable import JsonDataCore
 
 struct ComplexCodable: Codable, Equatable {
     var title: String

@@ -1,6 +1,6 @@
 import Foundation
 
-#if !canImport(SwiftData)
+
 
 /// A custom Predicate type for JsonData that holds the pre-compiled SQL string and arguments.
 public struct Predicate<T: PersistentModel>: @unchecked Sendable {
@@ -17,4 +17,4 @@ public struct Predicate<T: PersistentModel>: @unchecked Sendable {
     }
 }
 
-#endif
+

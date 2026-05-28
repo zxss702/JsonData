@@ -1,7 +1,7 @@
-#if !canImport(SwiftData)
+
 import Foundation
 import XCTest
-@testable import JsonData
+@testable import JsonDataCore
 
 final class TransientTests: XCTestCase {
     func testTransientFieldsAreExcludedFromEncoding() throws {
@@ -73,7 +73,7 @@ final class TransientTests: XCTestCase {
 private final class TransientNote {
     var title: String = ""
     @Transient var cache: String? = nil
-    @JsonData.Transient var qualifiedCache: String? = nil
+    @JsonDataCore.Transient var qualifiedCache: String? = nil
 
     init(title: String = "", cache: String? = nil, qualifiedCache: String? = nil) {
         self.title = title
@@ -81,4 +81,4 @@ private final class TransientNote {
         self.qualifiedCache = qualifiedCache
     }
 }
-#endif
+

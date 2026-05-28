@@ -1,7 +1,7 @@
-#if !canImport(SwiftData)
+
 import Foundation
 import XCTest
-@testable import JsonData
+@testable import JsonDataCore
 
 final class ModelMacro_schemaMetadata_agent_test: XCTestCase {
     func testModelMacroGeneratesPersistentSchemaMetadataAndSkipsTransientFields() {
@@ -39,4 +39,4 @@ private final class SchemaMetadataAgentNote {
     var isActive: Bool = false
     @Transient var cache: String? = nil
 }
-#endif
+

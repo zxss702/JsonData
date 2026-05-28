@@ -1,8 +1,0 @@
-别管契约了，就按照这个计划继续做。
-## 标题L3 实施计划：将非 SwiftData 路径从 JSON 迁移到 SQLite/GRDB，并保持外部 API 不变
-## 摘要按“先最小验证、再分层替换”的顺序推进：先用隔离测试锁定“public 写法不变 / 谓词编译成 SQL / faulting 与 identity map 保持现有心智模型”的最低契约，再引入 SQLite 依赖与 schema metadata，随后替换存储层、接入 Predicate→SQL 编译，最后迁移 `ModelContext` 行为并完成跨平台验证。全程保持最小修改，不扩大到用户未明确提出的能力。
-## 需要创建的隔离测试1. `file:///Volumes/知阳/开发/Packges/JsonData/Tests/JsonDataTests/ModelContext_sqlite_bootstrap_agent_test.swift`   - 验证 `ModelContext(url:)` 在非 SwiftData 路径下可创建并使用 SQLite 存储，而不是当前 JSON 文件布局。   - 仅覆盖用户明确要求的“内部 Json 实现改成使用 sqlite 实现，public 写法不需要做改变”。
-2. `file:///Volumes/知阳/开发/Packges/JsonData/Tests/JsonDataTests/FetchPredicate_sql_agent_test.swift`   - 验证 `FetchDescriptor(predicate:)` 的查询路径走 SQL 编译结果，不走“解析出来遍历”的实现。   - 只验证用户明确提到的 fetch 谓词路径。
-3. `file:///Volumes/知阳/开发/Packges/JsonData/Tests/JsonDataTests/ModelMacro_schemaMetadata_agent_test.swift`   - 验证 `@Model` 宏为持久化字段生成 schema metadata，且 `@Transient` 字段不进入持久化 metadata。   - 只覆盖当前宏已明确区分 transient/persistent 字段的范围。
-4. `file:///Volumes/知阳/开发/Packges/JsonData/Tests/JsonDataTests/ModelContext_faulting_identityMap_agent_test.swift`   - 验证迁移到 SQLite 后，`fetch` 仍可返回 fault，对属性访问触发 fault-in，并保持同一 `persistentModelID` 的对象复用语义。   - 仅对齐当前实现里已经存在的 faulting / identity map 语义。
-5. `file:///Volumes/知阳/开发/Packges/JsonData/Tests/JsonDataTests/LinuxWindows_smoke_agent_test.swift`   - 最小烟雾验证：在非 SwiftData 条件下，插入 / 保存 / 读取 / 删除一条模型记录可通过。   - 作为后续 glibc / musl / Windows 验证的统一入口。

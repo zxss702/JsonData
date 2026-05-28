@@ -1,6 +1,6 @@
 import Foundation
 
-#if !canImport(SwiftData)
+
 public enum _JsonDataColumnKind: String, Sendable {
     case string
     case integer
@@ -75,4 +75,4 @@ public protocol _JsonDataSchemaProviding {
     static var _jsonDataUniques: [_JsonDataUniqueInfo] { get }
     static func _jsonDataPropertyName(for keyPath: AnyKeyPath) -> String?
 }
-#endif
+

@@ -1,7 +1,7 @@
-#if !canImport(SwiftData)
+
 import Foundation
 import XCTest
-@testable import JsonData
+@testable import JsonDataCore
 
 final class ModelContext_sqlite_bootstrap_agent_test: XCTestCase {
     func testModelContextURLBootstrapsSQLiteStoreAndReloadsModelByID() throws {
@@ -40,4 +40,4 @@ private final class SQLiteBootstrapAgentUser {
         self.age = age
     }
 }
-#endif
+

@@ -24,15 +24,22 @@ let package = Package(
             ]
         ),
         .target(
-            name: "JsonData",
+            name: "JsonDataCore",
             dependencies: [
                 "JsonDataMacros",
                 .product(name: "GRDB", package: "GRDB.swift"),
             ]
         ),
+        .target(
+            name: "JsonData",
+            dependencies: [
+                "JsonDataCore",
+            ]
+        ),
         .testTarget(
             name: "JsonDataTests",
             dependencies: [
+                "JsonDataCore",
                 "JsonData",
             ]
         )

@@ -1,5 +1,5 @@
 import XCTest
-@testable import JsonData
+@testable import JsonDataCore
 
 @Model
 final class UniqueUser {
@@ -14,7 +14,7 @@ final class UniqueUser {
 
 final class AttributeTests: XCTestCase {
     func testUniqueAttributeGeneratesUniqueConstraint() throws {
-        #if !canImport(SwiftData)
+        
         let columns = UniqueUser._jsonDataColumns
         guard let nameColumn = columns.first(where: { $0.propertyName == "name" }) else {
             XCTFail("name column missing")
@@ -22,6 +22,6 @@ final class AttributeTests: XCTestCase {
         }
         
         XCTAssertTrue(nameColumn.options.contains(.unique))
-        #endif
+        
     }
 }

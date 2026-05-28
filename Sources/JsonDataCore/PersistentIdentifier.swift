@@ -1,4 +1,4 @@
-#if !canImport(SwiftData)
+
 import Foundation
 import GRDB
 
@@ -32,4 +32,4 @@ public struct PersistentIdentifier: Hashable, Identifiable, Equatable, Comparabl
         try container.encode(id)
     }
 }
-#endif
+

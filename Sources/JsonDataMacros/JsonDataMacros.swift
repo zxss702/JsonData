@@ -487,7 +487,7 @@ public struct PredicateMacro: ExpressionMacro {
         
         let argsString = parsed.1.map { "\($0)" }.joined(separator: ", ")
         
-        return "JsonData.Predicate(sql: \"\(raw: parsed.0)\", arguments: [\(raw: argsString)])"
+        return "JsonDataCore.Predicate(sql: \"\(raw: parsed.0)\", arguments: [\(raw: argsString)])"
     }
 }
 

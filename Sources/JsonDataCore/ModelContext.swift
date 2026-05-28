@@ -1,7 +1,7 @@
 import Foundation
 import Synchronization
 
-#if !canImport(SwiftData)
+
 import GRDB
 
 private final class WeakRef {
@@ -749,4 +749,4 @@ extension ModelContext {
     }
 }
 
-#endif
+

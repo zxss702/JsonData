@@ -1,11 +1,9 @@
 import XCTest
-#if canImport(SwiftData)
-import SwiftData
-#else
-@testable import JsonData
-#endif
 
-#if !canImport(SwiftData)
+@testable import JsonDataCore
+
+
+
 @Model
 private final class IndexUniqueRecord {
     #Index<IndexUniqueRecord>([\.firstName], [\.lastName, \.age])
@@ -46,4 +44,4 @@ final class CrossPlatformIndexUniqueTests: XCTestCase {
         XCTAssertEqual(fetched.count, 1)
     }
 }
-#endif
+

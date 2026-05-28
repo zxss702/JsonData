@@ -1,7 +1,7 @@
-#if !canImport(SwiftData)
+
 import Foundation
 import XCTest
-@testable import JsonData
+@testable import JsonDataCore
 
 final class ModelContext_faulting_identityMap_agent_test: XCTestCase {
     func testFetchReturnsFaultPropertyAccessFaultsInAndModelForReusesInstance() throws {
@@ -44,4 +44,4 @@ private final class FaultingIdentityAgentUser {
         self.age = age
     }
 }
-#endif
+

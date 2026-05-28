@@ -1,7 +1,7 @@
-#if !canImport(SwiftData)
+
 import Foundation
 import XCTest
-@testable import JsonData
+@testable import JsonDataCore
 
 final class SQLiteRuntimeTests: XCTestCase {
     func testCRUDAndPredicateFetch() throws {
@@ -81,4 +81,4 @@ private final class RuntimeUser {
         self.age = age
     }
 }
-#endif
+

@@ -1,7 +1,7 @@
-#if !canImport(SwiftData)
+
 import Foundation
 import XCTest
-@testable import JsonData
+@testable import JsonDataCore
 
 final class FetchPredicate_sql_agent_test: XCTestCase {
     func testFetchWithPredicateReturnsOnlyMatchingRowAndPlainFetchReturnsFaults() throws {
@@ -50,4 +50,4 @@ private final class FetchPredicateAgentUser {
         self.age = age
     }
 }
-#endif
+

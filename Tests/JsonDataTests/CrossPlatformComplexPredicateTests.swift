@@ -1,9 +1,9 @@
 import Foundation
 import XCTest
-#if canImport(SwiftData)
-import SwiftData
-#endif
-@testable import JsonData
+
+
+
+@testable import JsonDataCore
 
 final class CrossPlatformComplexPredicateTests: XCTestCase {
     func testComplexLogicalCombinations() throws {

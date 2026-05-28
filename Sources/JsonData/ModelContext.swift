@@ -306,7 +306,7 @@ public final class ModelContext: @unchecked Sendable {
                 if let schemaType = modelType as? any _JsonDataSchemaProviding.Type {
                     let extDir = baseURL.appendingPathComponent(".externalStorage")
                     for column in schemaType._jsonDataColumns where column.options.contains(.externalStorage) {
-                        let filename = "\(model.persistentModelID)_\(column.propertyName).dat"
+                        let filename = "\(model.persistentModelID.id)_\(column.propertyName).dat"
                         let fileUrl = extDir.appendingPathComponent(filename)
                         try? FileManager.default.removeItem(at: fileUrl)
                     }
@@ -330,14 +330,45 @@ public final class ModelContext: @unchecked Sendable {
     }
 
     public func insert<T: PersistentModel>(_ model: T) {
-        identityMapLock.withLock { _ in
+        let shouldReturn = identityMapLock.withLock { _ -> Bool in
+            if insertedModels[model.persistentModelID] != nil || identityMap[model.persistentModelID] != nil {
+                return true
+            }
             identityMap[model.persistentModelID] = WeakRef(model)
             insertedModels[model.persistentModelID] = model
+            return false
         }
+        if shouldReturn { return }
 
         model._modelContext = self
         model._isFault = false
+        
+        _processCascadeInsert(for: model)
         _scheduleAutosave()
+    }
+    
+    private func _processCascadeInsert(for model: any PersistentModel) {
+        guard let schemaType = type(of: model) as? any _JsonDataSchemaProviding.Type else { return }
+        let relationships = schemaType._jsonDataRelationships
+        if relationships.isEmpty { return }
+        
+        let mirror = Mirror(reflecting: model)
+        var fields: [String: Any?] = [:]
+        for child in mirror.children {
+            guard let label = child.label, label.hasPrefix("_") else { continue }
+            fields[String(label.dropFirst())] = _fieldStorageValue(from: child.value)
+        }
+        
+        for rel in relationships {
+            guard let value = fields[rel.propertyName] as? Any else { continue }
+            if let relatedModel = value as? any PersistentModel {
+                self.insert(relatedModel)
+            } else if let relatedArray = value as? [any PersistentModel] {
+                for rm in relatedArray {
+                    self.insert(rm)
+                }
+            }
+        }
     }
 
     public func delete<T: PersistentModel>(_ model: T) {

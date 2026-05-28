@@ -521,6 +521,7 @@ public final class ModelContext: @unchecked Sendable {
         }
     }
 
+
     @MainActor
     public func startObservation<T: PersistentModel & Sendable>(
         _ descriptor: FetchDescriptor<T> = FetchDescriptor<T>(),

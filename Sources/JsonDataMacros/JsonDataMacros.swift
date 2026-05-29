@@ -382,8 +382,14 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                         if variable.attributeOptions.contains(where: { $0.contains(".externalStorage") }) {
                             return """
                                 if let context = decoder.userInfo[.modelContext] as? ModelContext, let ref = try? container.decode(String.self, forKey: .\(variable.name)) {
-                                    if let data = try? context._loadExternalData(from: ref) as? \(variable.type) {
-                                        self._\(variable.name) = Field(wrappedValue: data)
+                                    if let loadedData = try? context._loadExternalData(from: ref) {
+                                        if \(variable.baseType).self == Data.self, let data = loadedData as? \(variable.type) {
+                                            self._\(variable.name) = Field(wrappedValue: data)
+                                        } else if let decoded = try? JSONDecoder().decode(\(variable.baseType).self, from: loadedData) {
+                                            self._\(variable.name) = Field(wrappedValue: decoded)
+                                        } else {
+                                            self._\(variable.name) = Field()
+                                        }
                                     } else {
                                         self._\(variable.name) = Field()
                                     }
@@ -408,8 +414,18 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                         if variable.attributeOptions.contains(where: { $0.contains(".externalStorage") }) {
                             return """
                                 if let context = encoder.userInfo[.modelContext] as? ModelContext, let data = self._\(variable.name).value {
-                                    let ref = try context._saveExternalData(data, modelID: self.persistentModelID, propertyName: "\(variable.name)")
-                                    try container.encode(ref, forKey: .\(variable.name))
+                                    let encodedData: Data?
+                                    if let d = data as? Data {
+                                        encodedData = d
+                                    } else {
+                                        encodedData = try? JSONEncoder().encode(data)
+                                    }
+                                    if let encodedData = encodedData {
+                                        let ref = try context._saveExternalData(encodedData, modelID: self.persistentModelID, propertyName: "\(variable.name)")
+                                        try container.encode(ref, forKey: .\(variable.name))
+                                    } else {
+                                        try container.encode(self._\(variable.name), forKey: .\(variable.name))
+                                    }
                                 } else {
                                     try container.encode(self._\(variable.name), forKey: .\(variable.name))
                                 }

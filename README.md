@@ -121,3 +121,13 @@ struct TodoListView: View {
 这意味着：
 - **您可以自由地**将本框架用于您的商业闭源项目中（无需将您的 App 开源）。
 - **但如果您直接修改了本框架的源码**，您必须将这些针对本框架的修改以 MPL-2.0 协议开源回馈给社区。我们鼓励大家共同将 JsonData 维护得更好！
+
+## 获赞历史
+
+<a href="https://star-history.com/#zxss702/JsonData">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=zxss702/JsonData&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=zxss702/JsonData&type=Date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=zxss702/JsonData&type=Date" />
+  </picture>
+</a>

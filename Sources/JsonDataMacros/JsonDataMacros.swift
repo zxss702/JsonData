@@ -582,7 +582,7 @@ private struct PredicateClosureParser {
             try parseExpr(infix.rightOperand)
             sql += ")"
         } else if let propName = getModelProperty(from: expr) {
-            sql += "\"\(propName)\""
+            sql += "\\\"\(propName)\\\""
         } else if let prefix = expr.as(PrefixOperatorExprSyntax.self) {
             let op = prefix.operator.trimmedDescription
             if op == "!" {

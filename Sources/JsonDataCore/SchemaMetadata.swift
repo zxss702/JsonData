@@ -34,7 +34,7 @@ public struct _JsonDataColumnInfo: Sendable, Equatable {
     }
 }
 
-public struct _JsonDataRelationshipInfo: Sendable {
+public struct _JsonDataRelationshipInfo: @unchecked Sendable {
     public let propertyName: String
     public let deleteRule: Schema.Relationship.DeleteRule
     public let destinationType: any PersistentModel.Type

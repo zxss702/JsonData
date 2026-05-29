@@ -383,7 +383,7 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                             return """
                                 if let context = decoder.userInfo[.modelContext] as? ModelContext, let ref = try? container.decode(String.self, forKey: .\(variable.name)) {
                                     if let loadedData = try? context._loadExternalData(from: ref) {
-                                        if \(variable.baseType).self == Data.self, let data = loadedData as? \(variable.type) {
+                                        if \(variable.baseType).self == Data.self, let data = loadedData as Any as? \(variable.type) {
                                             self._\(variable.name) = Field(wrappedValue: data)
                                         } else if let decoded = try? JSONDecoder().decode(\(variable.baseType).self, from: loadedData) {
                                             self._\(variable.name) = Field(wrappedValue: decoded)
@@ -415,7 +415,7 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                             return """
                                 if let context = encoder.userInfo[.modelContext] as? ModelContext, let data = self._\(variable.name).value {
                                     let encodedData: Data?
-                                    if let d = data as? Data {
+                                    if let d = data as Any as? Data {
                                         encodedData = d
                                     } else {
                                         encodedData = try? JSONEncoder().encode(data)
@@ -535,6 +535,29 @@ private struct PredicateClosureParser {
         return (sql, arguments)
     }
 
+    private func getModelProperty(from expr: ExprSyntax) -> String? {
+        var current: ExprSyntax = expr
+
+        while true {
+            if let memberAccess = current.as(MemberAccessExprSyntax.self) {
+                if let base = memberAccess.base {
+                    if base.trimmedDescription == closureParamName {
+                        return memberAccess.declName.baseName.text
+                    }
+                    current = base
+                } else {
+                    return nil
+                }
+            } else if let optChain = current.as(OptionalChainingExprSyntax.self) {
+                current = optChain.expression
+            } else if let forceUnwrap = current.as(ForceUnwrapExprSyntax.self) {
+                current = forceUnwrap.expression
+            } else {
+                return nil
+            }
+        }
+    }
+
     mutating func parseExpr(_ expr: ExprSyntax) throws {
         if let tuple = expr.as(TupleExprSyntax.self), tuple.elements.count == 1, let first = tuple.elements.first {
             sql += "("
@@ -552,20 +575,14 @@ private struct PredicateClosureParser {
             case "<", ">", "<=", ">=": sql += op
             case "&&": sql += "AND"
             case "||": sql += "OR"
-            default: throw MacroError("Unsupported operator \\(op)")
+            default: throw MacroError("Unsupported operator \(op)")
             }
             
             sql += " "
             try parseExpr(infix.rightOperand)
             sql += ")"
-        } else if let member = expr.as(MemberAccessExprSyntax.self) {
-            if let base = member.base, base.trimmedDescription == closureParamName {
-                let propName = member.declName.baseName.text
-                sql += "\\\"\(propName)\\\""
-            } else {
-                sql += "?"
-                arguments.append(expr.trimmedDescription)
-            }
+        } else if let propName = getModelProperty(from: expr) {
+            sql += "\"\(propName)\""
         } else if let prefix = expr.as(PrefixOperatorExprSyntax.self) {
             let op = prefix.operator.trimmedDescription
             if op == "!" {

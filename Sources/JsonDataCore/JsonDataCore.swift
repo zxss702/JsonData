@@ -3,7 +3,7 @@ import Foundation
 
 @attached(extension, conformances: PersistentModel, _JsonDataSchemaProviding)
 @attached(memberAttribute)
-@attached(member, names: named(_observationRegistrar), named(_modelContext), named(_isFault), named(_isFaulting), named(access), named(withMutation), named(didChange), named(fault), named(_copy), named(CodingKeys), named(init), named(encode), named(persistentModelID), named(_jsonDataTableName), named(_jsonDataColumns), named(_jsonDataRelationships), named(_jsonDataPropertyName), named(_isSyncingInverse), named(_jsonDataSetValue), named(_jsonDataIndexes), named(_jsonDataUniques))
+@attached(member, names: named(_observationRegistrar), named(modelContext), named(_modelContext), named(_isFault), named(_isFaulting), named(access), named(withMutation), named(didChange), named(fault), named(_copy), named(CodingKeys), named(init), named(encode), named(persistentModelID), named(_jsonDataTableName), named(_jsonDataColumns), named(_jsonDataRelationships), named(_jsonDataPropertyName), named(_isSyncingInverse), named(_jsonDataSetValue), named(_jsonDataIndexes), named(_jsonDataUniques))
 public macro Model() = #externalMacro(module: "JsonDataMacros", type: "ModelMacro")
 
 @attached(peer)
@@ -43,8 +43,9 @@ public macro Index<T>(_ groups: [PartialKeyPath<T>]...) = #externalMacro(module:
 @freestanding(declaration)
 public macro Unique<T>(_ groups: [PartialKeyPath<T>]...) = #externalMacro(module: "JsonDataMacros", type: "UniqueMacro")
 
-public protocol PersistentModel: AnyObject, Codable, Observable {
+public protocol PersistentModel: AnyObject, Codable, Observable, Hashable, Equatable, Identifiable {
     var persistentModelID: PersistentIdentifier { get set }
+    var modelContext: ModelContext? { get }
     var _modelContext: ModelContext? { get set }
     var _isFault: Bool { get set }
     var _isFaulting: Bool { get set }
@@ -55,6 +56,20 @@ public protocol PersistentModel: AnyObject, Codable, Observable {
     func _jsonDataSetValue(_ value: Any?, forPropertyName propertyName: String)
     var _isSyncingInverse: Bool { get set }
     init()
+}
+
+public extension PersistentModel {
+    var id: PersistentIdentifier { persistentModelID }
+    
+    var modelContext: ModelContext? { _modelContext }
+    
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.persistentModelID == rhs.persistentModelID
+    }
+    
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(persistentModelID)
+    }
 }
 
 public typealias SortDescriptor<T: PersistentModel> = Foundation.SortDescriptor<T>

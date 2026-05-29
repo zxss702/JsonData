@@ -206,7 +206,7 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
             codingKeys += "}\n"
 
             let typeName = declaration.as(ClassDeclSyntax.self)?.name.text ?? "Self"
-            let tableNameDecl = "internal static let _jsonDataTableName = \"\(typeName)\""
+            let tableNameDecl = "public static let _jsonDataTableName = \"\(typeName)\""
             
             let persistentVariables = variables.filter { !$0.attributeOptions.contains(".ephemeral") }
             
@@ -216,10 +216,10 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
             }.joined(separator: ",\n")
             let columnsDecl: String
             if columnEntries.isEmpty {
-                columnsDecl = "internal static let _jsonDataColumns: [_JsonDataColumnInfo] = []"
+                columnsDecl = "public static let _jsonDataColumns: [_JsonDataColumnInfo] = []"
             } else {
                 columnsDecl = """
-                internal static let _jsonDataColumns: [_JsonDataColumnInfo] = [
+                public static let _jsonDataColumns: [_JsonDataColumnInfo] = [
                 \(columnEntries)
                 ]
                 """
@@ -234,10 +234,10 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
             
             let relationshipsDecl: String
             if relationshipEntries.isEmpty {
-                relationshipsDecl = "internal static let _jsonDataRelationships: [_JsonDataRelationshipInfo] = []"
+                relationshipsDecl = "public static let _jsonDataRelationships: [_JsonDataRelationshipInfo] = []"
             } else {
                 relationshipsDecl = """
-                internal static let _jsonDataRelationships: [_JsonDataRelationshipInfo] = [
+                public static let _jsonDataRelationships: [_JsonDataRelationshipInfo] = [
                 \(relationshipEntries)
                 ]
                 """
@@ -265,8 +265,8 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
             for m in indexMacros { indexGroups.append(contentsOf: extractProperties(from: m)) }
             
             let indexEntries = indexGroups.map { "_JsonDataIndexInfo(properties: \($0))" }.joined(separator: ",\n")
-            let indexesDecl = indexEntries.isEmpty ? "internal static let _jsonDataIndexes: [_JsonDataIndexInfo] = []" : """
-            internal static let _jsonDataIndexes: [_JsonDataIndexInfo] = [
+            let indexesDecl = indexEntries.isEmpty ? "public static let _jsonDataIndexes: [_JsonDataIndexInfo] = []" : """
+            public static let _jsonDataIndexes: [_JsonDataIndexInfo] = [
             \(indexEntries)
             ]
             """
@@ -276,8 +276,8 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
             for m in uniqueMacros { uniqueGroups.append(contentsOf: extractProperties(from: m)) }
             
             let uniqueEntries = uniqueGroups.map { "_JsonDataUniqueInfo(properties: \($0))" }.joined(separator: ",\n")
-            let uniquesDecl = uniqueEntries.isEmpty ? "internal static let _jsonDataUniques: [_JsonDataUniqueInfo] = []" : """
-            internal static let _jsonDataUniques: [_JsonDataUniqueInfo] = [
+            let uniquesDecl = uniqueEntries.isEmpty ? "public static let _jsonDataUniques: [_JsonDataUniqueInfo] = []" : """
+            public static let _jsonDataUniques: [_JsonDataUniqueInfo] = [
             \(uniqueEntries)
             ]
             """
@@ -287,13 +287,13 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
             let resolverDecl: String
             if resolverBranches.isEmpty {
                 resolverDecl = """
-                internal static func _jsonDataPropertyName(for keyPath: AnyKeyPath) -> String? {
+                public static func _jsonDataPropertyName(for keyPath: AnyKeyPath) -> String? {
                     return nil
                 }
                 """
             } else {
                 resolverDecl = """
-                internal static func _jsonDataPropertyName(for keyPath: AnyKeyPath) -> String? {
+                public static func _jsonDataPropertyName(for keyPath: AnyKeyPath) -> String? {
                     \(resolverBranches)
                     return nil
                 }
@@ -332,6 +332,7 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                 "@ObservationIgnored public var _isSyncingInverse: Bool = false",
                 "@ObservationIgnored private let _observationRegistrar = ObservationRegistrar()",
                 "@ObservationIgnored public var persistentModelID: PersistentIdentifier = PersistentIdentifier(id: UUID().uuidString)",
+                "@ObservationIgnored public var modelContext: ModelContext? { _modelContext }",
                 "@ObservationIgnored public weak var _modelContext: ModelContext? = nil",
                 "@ObservationIgnored public var _isFault: Bool = false",
                 "@ObservationIgnored public var _isFaulting: Bool = false",

@@ -74,5 +74,7 @@ public protocol _JsonDataSchemaProviding {
     static var _jsonDataIndexes: [_JsonDataIndexInfo] { get }
     static var _jsonDataUniques: [_JsonDataUniqueInfo] { get }
     static func _jsonDataPropertyName(for keyPath: AnyKeyPath) -> String?
+    func _toColumnValues(context: ModelContext?) throws -> [String: Any?]
+    func _populateFromColumnValues(_ values: [String: Any?], context: ModelContext?)
 }
 

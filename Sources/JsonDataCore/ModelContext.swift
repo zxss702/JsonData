@@ -115,7 +115,7 @@ public final class ModelContext: @unchecked Sendable {
         
         let columns = _columns(for: type)
         
-        let definitions = ["id TEXT PRIMARY KEY NOT NULL", "payload BLOB NOT NULL"] + columns.map { column in
+        let definitions = ["_id TEXT PRIMARY KEY NOT NULL"] + columns.map { column in
             let sqlType = _sqlType(for: column.kind)
             let nullability = column.isOptional ? "" : " NOT NULL"
             let unique = column.options.contains(.unique) ? " UNIQUE" : ""
@@ -129,7 +129,6 @@ public final class ModelContext: @unchecked Sendable {
             for column in columns {
                 if !existingColumns.contains(column.columnName) {
                     let sqlType = self._sqlType(for: column.kind)
-                    // In SQLite, adding a NOT NULL column requires a DEFAULT value
                     let defaultVal = column.isOptional ? "" : " DEFAULT \(self._sqlDefault(for: column.kind))"
                     let nullability = column.isOptional ? "" : " NOT NULL"
                     let alterSQL = "ALTER TABLE \(self._quote(identifier: tableName)) ADD COLUMN \(self._quote(identifier: column.columnName)) \(sqlType)\(nullability)\(defaultVal)"
@@ -176,8 +175,6 @@ public final class ModelContext: @unchecked Sendable {
         }
     }
 
-
-
     private func _sqlDefault(for kind: _JsonDataColumnKind) -> String {
         switch kind {
         case .string, .uuid, .date, .codableJSON:
@@ -195,57 +192,7 @@ public final class ModelContext: @unchecked Sendable {
         "\"" + identifier.replacingOccurrences(of: "\"", with: "\"\"") + "\""
     }
 
-    private func _databaseValue(for value: Any?, kind: _JsonDataColumnKind) throws -> DatabaseValueConvertible? {
-        guard let value else { return nil }
-        switch kind {
-        case .string:
-            return value as? String
-        case .integer:
-            return value as? Int64 ?? (value as? Int).map(Int64.init)
-        case .double:
-            return value as? Double
-        case .bool:
-            if let bool = value as? Bool { return bool ? 1 : 0 }
-            return nil
-        case .uuid:
-            return (value as? UUID)?.uuidString
-        case .date:
-            return ISO8601DateFormatter().string(from: value as! Date)
-        case .data:
-            return value as? Data
-        case .codableJSON:
-            let data = try JSONEncoder().encode(AnyEncodable(value))
-            return String(decoding: data, as: UTF8.self)
-        }
-    }
-
-    private func _extractColumnValues(from model: any PersistentModel) throws -> [String: DatabaseValueConvertible?] {
-        let mirror = Mirror(reflecting: model)
-        var fields: [String: Any?] = [:]
-        for child in mirror.children {
-            guard let label = child.label, label.hasPrefix("_") else { continue }
-            fields[String(label.dropFirst())] = _fieldStorageValue(from: child.value)
-        }
-
-        var values: [String: DatabaseValueConvertible?] = [:]
-        for column in _columns(for: type(of: model)) {
-            let rawValue = fields[column.propertyName] ?? nil
-            values[column.columnName] = try _databaseValue(for: rawValue, kind: column.kind)
-        }
-        return values
-    }
-
-    private func _fieldStorageValue(from storage: Any) -> Any? {
-        let mirror = Mirror(reflecting: storage)
-        for child in mirror.children where child.label == "value" || child.label == "defaultValue" {
-            let childMirror = Mirror(reflecting: child.value)
-            if childMirror.displayStyle == .optional {
-                return childMirror.children.first?.value
-            }
-            return child.value
-        }
-        return nil
-    }
+    // MARK: - Save
 
     public func _modelDidChange(_ model: any PersistentModel) {
         identityMapLock.withLock { _ in
@@ -260,21 +207,21 @@ public final class ModelContext: @unchecked Sendable {
     private func _saveModel(_ model: any PersistentModel, in db: Database) throws {
         let modelType = type(of: model)
         try _ensureTable(for: modelType, in: db)
-        let encoder = JSONEncoder()
-        encoder.userInfo[.modelContext] = self
-        let payload = try encoder.encode(AnyEncodable(model))
         let tableName = _tableName(for: modelType)
-        let columnValues = try _extractColumnValues(from: model)
+        
+        guard let schemaModel = model as? any _JsonDataSchemaProviding else { return }
+        let columnValues = try schemaModel._toColumnValues(context: self)
         
         let cols = _columns(for: modelType)
-        var columns = ["id", "payload"]
-        var placeholders = ["?", "?"]
-        var arguments: [DatabaseValueConvertible?] = [model.persistentModelID, payload]
+        var columns = ["_id"]
+        var placeholders = ["?"]
+        var arguments: [DatabaseValueConvertible?] = [model.persistentModelID.id]
         
         for column in cols {
             columns.append(column.columnName)
             placeholders.append("?")
-            arguments.append(columnValues[column.columnName] ?? nil)
+            let rawValue = columnValues[column.columnName] ?? nil
+            arguments.append(_databaseArgument(for: rawValue))
         }
         
         let sql = "INSERT OR REPLACE INTO \(_quote(identifier: tableName)) (\(columns.map(_quote(identifier:)).joined(separator: ", "))) VALUES (\(placeholders.joined(separator: ", ")))"
@@ -313,8 +260,8 @@ public final class ModelContext: @unchecked Sendable {
                 }
                 
                 try db.execute(
-                    sql: "DELETE FROM \(_quote(identifier: _tableName(for: modelType))) WHERE id = ?",
-                    arguments: [model.persistentModelID]
+                    sql: "DELETE FROM \(_quote(identifier: _tableName(for: modelType))) WHERE _id = ?",
+                    arguments: [model.persistentModelID.id]
                 )
             }
             
@@ -328,6 +275,8 @@ public final class ModelContext: @unchecked Sendable {
         }
         _postContextDidChange()
     }
+
+    // MARK: - Insert / Delete
 
     public func insert<T: PersistentModel>(_ model: T) {
         let shouldReturn = identityMapLock.withLock { _ -> Bool in
@@ -375,7 +324,7 @@ public final class ModelContext: @unchecked Sendable {
         let shouldReturn = identityMapLock.withLock { _ -> Bool in
             let id = model.persistentModelID
             if deletedModels[id] != nil {
-                return true // prevent infinite recursion
+                return true
             }
             
             identityMap.removeValue(forKey: id)
@@ -419,6 +368,23 @@ public final class ModelContext: @unchecked Sendable {
         }
     }
 
+    private func _fieldStorageValue(from storage: Any) -> Any? {
+        let mirror = Mirror(reflecting: storage)
+        for child in mirror.children where child.label == "value" || child.label == "defaultValue" {
+            let childMirror = Mirror(reflecting: child.value)
+            if childMirror.displayStyle == .optional {
+                if let unwrapped = childMirror.children.first?.value {
+                    return unwrapped
+                }
+                continue
+            }
+            return child.value
+        }
+        return nil
+    }
+
+    // MARK: - Fetch
+
     public func fetch<T: PersistentModel>(
         _ descriptor: FetchDescriptor<T> = FetchDescriptor<T>(),
         limit: Int? = nil
@@ -431,13 +397,10 @@ public final class ModelContext: @unchecked Sendable {
         try _ensureTable(for: T.self)
         let tableName = _tableName(for: T.self)
         let query = try _buildFetchQuery(for: T.self, descriptor: descriptor, limit: effectiveLimit, tableName: tableName)
-        let rows: [(PersistentIdentifier, Data)] = try databaseQueue.read { db in
-            let rows = try Row.fetchAll(db, sql: query.sql, arguments: query.arguments)
-            return rows.map { row in
-                let idStr: String = row["id"]
-                let payload: Data = row["payload"]
-                return (PersistentIdentifier(id: idStr), payload)
-            }
+        let cols = _columns(for: T.self)
+        
+        let rows: [Row] = try databaseQueue.read { db in
+            try Row.fetchAll(db, sql: query.sql, arguments: query.arguments)
         }
 
         var results: [T] = []
@@ -445,28 +408,39 @@ public final class ModelContext: @unchecked Sendable {
             _purgeStaleEntries()
         }
 
-        for (id, payload) in rows {
+        for row in rows {
+            let idStr: String = row["_id"]
+            let id = PersistentIdentifier(id: idStr)
+            
+            let model: T
+            let wasFault: Bool
             if let ref = identityMap[id], let cached = ref.value as? T {
-                results.append(cached)
+                model = cached
+                wasFault = cached._isFault
+            } else {
+                model = T()
+                model.persistentModelID = id
+                wasFault = true
+            }
+            
+            if descriptor.predicate == nil && wasFault {
+                model._isFault = true
+                model._modelContext = self
+                identityMap[id] = WeakRef(model)
+                results.append(model)
                 continue
             }
 
-            if descriptor.predicate == nil {
-                let fault = T()
-                fault.persistentModelID = id
-                fault._isFault = true
-                fault._modelContext = self
-                identityMap[id] = WeakRef(fault)
-                results.append(fault)
-                continue
+            if wasFault {
+                let values = _rowToValues(row, columns: cols)
+                if let schemaModel = model as? any _JsonDataSchemaProviding {
+                    schemaModel._populateFromColumnValues(values, context: self)
+                }
+                model._modelContext = self
+                model._isFault = false
+                identityMap[id] = WeakRef(model)
             }
-
-            let decoder = JSONDecoder()
-            decoder.userInfo[.modelContext] = self
-            let model = try decoder.decode(T.self, from: payload)
-            model._modelContext = self
-            model._isFault = false
-            identityMap[id] = WeakRef(model)
+            
             results.append(model)
         }
 
@@ -483,13 +457,13 @@ public final class ModelContext: @unchecked Sendable {
         return ValueObservation.tracking { db in
             let query = try self._buildFetchQuery(for: T.self, descriptor: descriptor, limit: effectiveLimit, tableName: tableName)
             let rows = try Row.fetchAll(db, sql: query.sql, arguments: query.arguments)
+            let cols = self._columns(for: T.self)
             
             let results = self.identityMapLock.withLock { _ -> [T] in
                 var results = [T]()
                 for row in rows {
-                    let idStr: String = row["id"]
+                    let idStr: String = row["_id"]
                     let id = PersistentIdentifier(id: idStr)
-                    let payload: Data = row["payload"]
                     
                     if let ref = self.identityMap[id], let cached = ref.value as? T {
                         results.append(cached)
@@ -506,14 +480,16 @@ public final class ModelContext: @unchecked Sendable {
                         continue
                     }
 
-                    let decoder = JSONDecoder()
-                    decoder.userInfo[.modelContext] = self
-                    if let model = try? decoder.decode(T.self, from: payload) {
-                        model._modelContext = self
-                        model._isFault = false
-                        self.identityMap[id] = WeakRef(model)
-                        results.append(model)
+                    let values = self._rowToValues(row, columns: cols)
+                    let model = T()
+                    model.persistentModelID = id
+                    if let schemaModel = model as? any _JsonDataSchemaProviding {
+                        schemaModel._populateFromColumnValues(values, context: self)
                     }
+                    model._modelContext = self
+                    model._isFault = false
+                    self.identityMap[id] = WeakRef(model)
+                    results.append(model)
                 }
                 return results
             }
@@ -555,17 +531,25 @@ public final class ModelContext: @unchecked Sendable {
 
     private func _loadModel<T: PersistentModel>(for id: PersistentIdentifier) throws -> T? {
         try _ensureTable(for: T.self)
-        let payload: Data? = try databaseQueue.read { db in
-            try Data.fetchOne(
+        let tableName = _tableName(for: T.self)
+        let cols = _columns(for: T.self)
+        let selectCols = (["_id"] + cols.map { _quote(identifier: $0.columnName) }).joined(separator: ", ")
+        
+        let row: Row? = try databaseQueue.read { db in
+            try Row.fetchOne(
                 db,
-                sql: "SELECT payload FROM \(_quote(identifier: _tableName(for: T.self))) WHERE id = ?",
+                sql: "SELECT \(selectCols) FROM \(_quote(identifier: tableName)) WHERE _id = ?",
                 arguments: [id.id]
             )
         }
-        guard let payload else { return nil }
-        let decoder = JSONDecoder()
-        decoder.userInfo[.modelContext] = self
-        let model = try decoder.decode(T.self, from: payload)
+        guard let row else { return nil }
+        
+        let model = T()
+        model.persistentModelID = id
+        let values = _rowToValues(row, columns: cols)
+        if let schemaModel = model as? any _JsonDataSchemaProviding {
+            schemaModel._populateFromColumnValues(values, context: self)
+        }
         model._modelContext = self
         model._isFault = false
         return model
@@ -585,13 +569,40 @@ public final class ModelContext: @unchecked Sendable {
         }
     }
 
+    // MARK: - Row ↔ Values Helpers
+
+    private func _rowToValues(_ row: Row, columns: [_JsonDataColumnInfo]) -> [String: Any?] {
+        var values: [String: Any?] = [:]
+        values["_id"] = row["_id"] as String
+        for col in columns {
+            switch col.kind {
+            case .string, .uuid, .date, .codableJSON:
+                values[col.columnName] = row[col.columnName] as String?
+            case .integer:
+                values[col.columnName] = row[col.columnName] as Int64?
+            case .double:
+                values[col.columnName] = row[col.columnName] as Double?
+            case .bool:
+                values[col.columnName] = row[col.columnName] as Int64?
+            case .data:
+                values[col.columnName] = row[col.columnName] as Data?
+            }
+        }
+        
+        return values
+    }
+
+    // MARK: - Query Building
+
     private func _buildFetchQuery<T: PersistentModel>(
         for type: T.Type,
         descriptor: FetchDescriptor<T>,
         limit: Int?,
         tableName: String
     ) throws -> (sql: String, arguments: StatementArguments) {
-        var sql = "SELECT id, payload FROM \(_quote(identifier: tableName))"
+        let cols = _columns(for: type)
+        let selectCols = (["_id"] + cols.map { _quote(identifier: $0.columnName) }).joined(separator: ", ")
+        var sql = "SELECT \(selectCols) FROM \(_quote(identifier: tableName))"
         var arguments = StatementArguments()
 
         if let predicate = descriptor.predicate {
@@ -683,54 +694,8 @@ private func _databaseArgument(for value: Any?) -> DatabaseValueConvertible? {
     case let data as Data: return data
     case nil: return nil
     default:
-        if let value {
-            let data = try? JSONEncoder().encode(AnyEncodable(value))
-            return data.map { String(decoding: $0, as: UTF8.self) }
-        }
         return nil
     }
-}
-
-private struct AnyEncodable: Encodable {
-    private let encodeImpl: (Encoder) throws -> Void
-
-    init(_ value: Any) {
-        self.encodeImpl = { encoder in
-            var container = encoder.singleValueContainer()
-            switch value {
-            case let value as String:
-                try container.encode(value)
-            case let value as Int:
-                try container.encode(value)
-            case let value as Int64:
-                try container.encode(value)
-            case let value as Double:
-                try container.encode(value)
-            case let value as Bool:
-                try container.encode(value)
-            case let value as UUID:
-                try container.encode(value.uuidString)
-            case let value as Date:
-                try container.encode(ISO8601DateFormatter().string(from: value))
-            case let value as Data:
-                try container.encode(value.base64EncodedString())
-            case let value as [String: String]:
-                try container.encode(value)
-            case let value as any Encodable:
-                try value.encode(to: encoder)
-            default:
-                try container.encodeNil()
-            }
-        }
-    }
-
-    func encode(to encoder: Encoder) throws {
-        try encodeImpl(encoder)
-    }
-}
-
-public extension CodingUserInfoKey {
-    static let modelContext = CodingUserInfoKey(rawValue: "modelContext")!
 }
 
 extension ModelContext {
@@ -743,11 +708,9 @@ extension ModelContext {
         return filename
     }
 
-    public func _loadExternalData(from filename: String) throws -> Data {
+    public func _loadExternalData(from reference: String) throws -> Data {
         let extDir = baseURL.appendingPathComponent(".externalStorage")
-        let fileUrl = extDir.appendingPathComponent(filename)
+        let fileUrl = extDir.appendingPathComponent(reference)
         return try Data(contentsOf: fileUrl)
     }
 }
-
-

@@ -31,6 +31,7 @@ final class CrossPlatformCodableTypesTests: XCTestCase {
         let results = try fetchContext.fetch(descriptor)
         
         XCTAssertEqual(results.count, 1)
+
         if let fetched = results.first {
             XCTAssertEqual(fetched.status, .active)
             XCTAssertEqual(fetched.settings.theme, "Dark")

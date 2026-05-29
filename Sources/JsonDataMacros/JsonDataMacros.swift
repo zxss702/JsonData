@@ -196,14 +196,11 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
             conformingTo protocols: [TypeSyntax],
             in context: some MacroExpansionContext
         ) throws -> [DeclSyntax] {
-            var codingKeys = "enum CodingKeys: String, CodingKey {\n  case persistentModelID\n"
             var assignments = ""
             let variables = persistentStoredProperties(in: declaration)
             for variable in variables {
-                codingKeys += "  case \(variable.name)\n"
                 assignments += "self._\(variable.name) = other._\(variable.name)\n"
             }
-            codingKeys += "}\n"
 
             let typeName = declaration.as(ClassDeclSyntax.self)?.name.text ?? "Self"
             let tableNameDecl = "public static let _jsonDataTableName = \"\(typeName)\""
@@ -212,7 +209,8 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
             
             let columnEntries = persistentVariables.map { variable in
                 let optionsArray = variable.attributeOptions.isEmpty ? "" : ", options: [\(variable.attributeOptions.joined(separator: ", "))]"
-                return "_JsonDataColumnInfo(propertyName: \"\(variable.name)\", columnName: \"\(variable.name)\", kind: \(variable.columnKind), isOptional: \(variable.isOptional)\(optionsArray))"
+                let kind = variable.attributeOptions.contains(where: { $0.contains(".externalStorage") }) ? "_JsonDataColumnKind.string" : variable.columnKind
+                return "_JsonDataColumnInfo(propertyName: \"\(variable.name)\", columnName: \"\(variable.name)\", kind: \(kind), isOptional: \(variable.isOptional)\(optionsArray))"
             }.joined(separator: ",\n")
             let columnsDecl: String
             if columnEntries.isEmpty {
@@ -328,6 +326,163 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
             }
             """
 
+            // ── Generate _toColumnValues ──
+            let toColumnLines = persistentVariables.map { variable -> String in
+                let name = variable.name
+                let valExpr: String
+                if variable.isOptional {
+                    valExpr = "(self._\(name).value ?? self._\(name).defaultValue)?.flatMap { $0 }"
+                } else {
+                    valExpr = "(self._\(name).value ?? self._\(name).defaultValue)"
+                }
+                
+                if variable.attributeOptions.contains(where: { $0.contains(".externalStorage") }) {
+                    return """
+                    if let data = \(valExpr) {
+                        let encodedData: Data?
+                        if let d = data as Any as? Data {
+                            encodedData = d
+                        } else {
+                            encodedData = try? JSONEncoder().encode(data)
+                        }
+                        if let encodedData = encodedData, let context = context {
+                            let ref = try context._saveExternalData(encodedData, modelID: self.persistentModelID, propertyName: "\(name)")
+                            values["\(name)"] = ref
+                        }
+                    }
+                    """
+                }
+                
+                switch variable.baseType {
+                case "String", "Int", "Double", "Data":
+                    return "values[\"\(name)\"] = \(valExpr)"
+                case "Bool":
+                    return """
+                    if let v = \(valExpr) { values["\(name)"] = v ? 1 : 0 }
+                    """
+                case "UUID":
+                    return "values[\"\(name)\"] = (\(valExpr))?.uuidString"
+                case "Date":
+                    return "values[\"\(name)\"] = (\(valExpr)).map { ISO8601DateFormatter().string(from: $0) }"
+                default:
+                    // Use dynamic overload resolution to handle relationships OR codable types
+                    return """
+                    if let v = \(valExpr) {
+                        if let jsonText = try? _jsonDataEncode(v) {
+                            values["\(name)"] = jsonText
+                        }
+                    }
+                    """
+                }
+            }.joined(separator: "\n")
+            
+            let toColumnValuesDecl = """
+            public func _toColumnValues(context: ModelContext?) throws -> [String: Any?] {
+                var values: [String: Any?] = [:]
+                \(toColumnLines)
+                return values
+            }
+            """
+
+            // ── Generate _populateFromColumnValues ──
+            let populateLines = persistentVariables.map { variable -> String in
+                let name = variable.name
+                
+                if variable.attributeOptions.contains(where: { $0.contains(".externalStorage") }) {
+                    let fetchRef = """
+                        var refId: String? = nil
+                        if let r = values["\(name)"] as? String { refId = r }
+                        else if let d = values["\(name)"] as? Data { refId = String(data: d, encoding: .utf8) }
+                    """
+                    
+                    if variable.baseType == "Data" {
+                        return """
+                        \(fetchRef)
+                        if let ref = refId, let ctx = context {
+                            if let fileData = try? ctx._loadExternalData(from: ref) {
+                                self._\(name) = Field(wrappedValue: fileData)
+                            }
+                        }
+                        """
+                    } else {
+                        return """
+                        \(fetchRef)
+                        if let ref = refId, let ctx = context {
+                            if let fileData = try? ctx._loadExternalData(from: ref),
+                               let decoded = try? JSONDecoder().decode(\(variable.baseType).self, from: fileData) {
+                                self._\(name) = Field(wrappedValue: decoded)
+                            }
+                        }
+                        """
+                    }
+                }
+                
+                switch variable.baseType {
+                case "String":
+                    return """
+                    if let v = values["\(name)"] as? String {
+                        self._\(name) = Field(wrappedValue: v)
+                    }
+                    """
+                case "Int":
+                    return """
+                    if let v = values["\(name)"] as? Int64 {
+                        self._\(name) = Field(wrappedValue: Int(v))
+                    } else if let v = values["\(name)"] as? Int {
+                        self._\(name) = Field(wrappedValue: v)
+                    }
+                    """
+                case "Double":
+                    return """
+                    if let v = values["\(name)"] as? Double {
+                        self._\(name) = Field(wrappedValue: v)
+                    }
+                    """
+                case "Bool":
+                    return """
+                    if let v = values["\(name)"] as? Int64 {
+                        self._\(name) = Field(wrappedValue: v != 0)
+                    } else if let v = values["\(name)"] as? Bool {
+                        self._\(name) = Field(wrappedValue: v)
+                    }
+                    """
+                case "UUID":
+                    return """
+                    if let v = values["\(name)"] as? String, let uuid = UUID(uuidString: v) {
+                        self._\(name) = Field(wrappedValue: uuid)
+                    }
+                    """
+                case "Date":
+                    return """
+                    if let v = values["\(name)"] as? String, let date = ISO8601DateFormatter().date(from: v) {
+                        self._\(name) = Field(wrappedValue: date)
+                    }
+                    """
+                case "Data":
+                    return """
+                    if let v = values["\(name)"] as? Data {
+                        self._\(name) = Field(wrappedValue: v)
+                    }
+                    """
+                default:
+                    return """
+                    if let json = values["\(name)"] as? String,
+                       let decoded = try? _jsonDataDecode(\(variable.baseType).self, from: json, context: context) {
+                        self._\(name) = Field(wrappedValue: decoded)
+                    }
+                    """
+                }
+            }.joined(separator: "\n")
+            
+            let populateDecl = """
+            public func _populateFromColumnValues(_ values: [String: Any?], context: ModelContext?) {
+                if let id = values["id"] as? String {
+                    self.persistentModelID = PersistentIdentifier(id: id)
+                }
+                \(populateLines)
+            }
+            """
+
             return [
                 "@ObservationIgnored public var _isSyncingInverse: Bool = false",
                 "@ObservationIgnored private let _observationRegistrar = ObservationRegistrar()",
@@ -375,69 +530,10 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                 }())
                 """,
                 """
-                public required init(from decoder: Decoder) throws {
-                    let container = try decoder.container(keyedBy: CodingKeys.self)
-                    self.persistentModelID = try container.decode(PersistentIdentifier.self, forKey: .persistentModelID)
-                    \(raw: persistentVariables.map { variable in
-                        if variable.attributeOptions.contains(where: { $0.contains(".externalStorage") }) {
-                            return """
-                                if let context = decoder.userInfo[.modelContext] as? ModelContext, let ref = try? container.decode(String.self, forKey: .\(variable.name)) {
-                                    if let loadedData = try? context._loadExternalData(from: ref) {
-                                        if \(variable.baseType).self == Data.self, let data = loadedData as Any as? \(variable.type) {
-                                            self._\(variable.name) = Field(wrappedValue: data)
-                                        } else if let decoded = try? JSONDecoder().decode(\(variable.baseType).self, from: loadedData) {
-                                            self._\(variable.name) = Field(wrappedValue: decoded)
-                                        } else {
-                                            self._\(variable.name) = Field()
-                                        }
-                                    } else {
-                                        self._\(variable.name) = Field()
-                                    }
-                                } else {
-                                    self._\(variable.name) = try container.decode(Field<\(variable.type)>.self, forKey: .\(variable.name))
-                                }
-                                """
-                        } else {
-                            return "self._\(variable.name) = try container.decode(Field<\(variable.type)>.self, forKey: .\(variable.name))"
-                        }
-                    }.joined(separator: "\n"))
-                    \(raw: variables.filter { $0.attributeOptions.contains(".ephemeral") }.map { variable in
-                        "self._\(variable.name) = Field<\(variable.type)>()"
-                    }.joined(separator: "\n"))
-                }
+                \(raw: toColumnValuesDecl)
                 """,
                 """
-                public func encode(to encoder: Encoder) throws {
-                    var container = encoder.container(keyedBy: CodingKeys.self)
-                    try container.encode(self.persistentModelID, forKey: .persistentModelID)
-                    \(raw: persistentVariables.map { variable in
-                        if variable.attributeOptions.contains(where: { $0.contains(".externalStorage") }) {
-                            return """
-                                if let context = encoder.userInfo[.modelContext] as? ModelContext, let data = self._\(variable.name).value {
-                                    let encodedData: Data?
-                                    if let d = data as Any as? Data {
-                                        encodedData = d
-                                    } else {
-                                        encodedData = try? JSONEncoder().encode(data)
-                                    }
-                                    if let encodedData = encodedData {
-                                        let ref = try context._saveExternalData(encodedData, modelID: self.persistentModelID, propertyName: "\(variable.name)")
-                                        try container.encode(ref, forKey: .\(variable.name))
-                                    } else {
-                                        try container.encode(self._\(variable.name), forKey: .\(variable.name))
-                                    }
-                                } else {
-                                    try container.encode(self._\(variable.name), forKey: .\(variable.name))
-                                }
-                                """
-                        } else {
-                            return "try container.encode(self._\(variable.name), forKey: .\(variable.name))"
-                        }
-                    }.joined(separator: "\n"))
-                }
-                """,
-                """
-                \(raw: codingKeys)
+                \(raw: populateDecl)
                 """,
                 """
                 \(raw: tableNameDecl)
@@ -542,7 +638,11 @@ private struct PredicateClosureParser {
             if let memberAccess = current.as(MemberAccessExprSyntax.self) {
                 if let base = memberAccess.base {
                     if base.trimmedDescription == closureParamName {
-                        return memberAccess.declName.baseName.text
+                        let name = memberAccess.declName.baseName.text
+                        if name == "persistentModelID" {
+                            return "id"
+                        }
+                        return name
                     }
                     current = base
                 } else {

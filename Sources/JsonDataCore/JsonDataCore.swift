@@ -3,7 +3,7 @@ import Foundation
 
 @attached(extension, conformances: PersistentModel, _JsonDataSchemaProviding)
 @attached(memberAttribute)
-@attached(member, names: named(_observationRegistrar), named(modelContext), named(_modelContext), named(_isFault), named(_isFaulting), named(access), named(withMutation), named(didChange), named(fault), named(_copy), named(CodingKeys), named(init), named(encode), named(persistentModelID), named(_jsonDataTableName), named(_jsonDataColumns), named(_jsonDataRelationships), named(_jsonDataPropertyName), named(_isSyncingInverse), named(_jsonDataSetValue), named(_jsonDataIndexes), named(_jsonDataUniques))
+@attached(member, names: named(_observationRegistrar), named(modelContext), named(_modelContext), named(_isFault), named(_isFaulting), named(access), named(withMutation), named(didChange), named(fault), named(_copy), named(init), named(persistentModelID), named(_jsonDataTableName), named(_jsonDataColumns), named(_jsonDataRelationships), named(_jsonDataPropertyName), named(_isSyncingInverse), named(_jsonDataSetValue), named(_jsonDataIndexes), named(_jsonDataUniques), named(_toColumnValues), named(_populateFromColumnValues))
 public macro Model() = #externalMacro(module: "JsonDataMacros", type: "ModelMacro")
 
 @attached(peer)
@@ -43,7 +43,7 @@ public macro Index<T>(_ groups: [PartialKeyPath<T>]...) = #externalMacro(module:
 @freestanding(declaration)
 public macro Unique<T>(_ groups: [PartialKeyPath<T>]...) = #externalMacro(module: "JsonDataMacros", type: "UniqueMacro")
 
-public protocol PersistentModel: AnyObject, Codable, Observable, Hashable, Equatable, Identifiable {
+public protocol PersistentModel: AnyObject, Observable, Hashable, Equatable, Identifiable {
     var persistentModelID: PersistentIdentifier { get set }
     var modelContext: ModelContext? { get }
     var _modelContext: ModelContext? { get set }
@@ -188,22 +188,65 @@ public struct Field<Value> {
     }
 }
 
+public func _jsonDataEncode<T: PersistentModel>(_ value: T) throws -> String? {
+    return value.persistentModelID.id
+}
+
+@_disfavoredOverload
+public func _jsonDataEncode<T: Codable>(_ value: T) throws -> String? {
+    let data = try JSONEncoder().encode(value)
+    return String(decoding: data, as: UTF8.self)
+}
+
+public func _jsonDataEncode<T: PersistentModel>(_ value: [T]) throws -> String? {
+    let ids = value.map { $0.persistentModelID.id }
+    let data = try JSONEncoder().encode(ids)
+    return String(decoding: data, as: UTF8.self)
+}
+
+@_disfavoredOverload
+public func _jsonDataEncode<T: Codable>(_ value: [T]) throws -> String? {
+    let data = try JSONEncoder().encode(value)
+    return String(decoding: data, as: UTF8.self)
+}
+
+public func _jsonDataDecode<T: PersistentModel>(_ type: T.Type, from string: String, context: ModelContext?) throws -> T? {
+    let obj = T()
+    obj.persistentModelID = PersistentIdentifier(id: string)
+    obj._isFault = true
+    obj._modelContext = context
+    return obj
+}
+
+@_disfavoredOverload
+public func _jsonDataDecode<T: Codable>(_ type: T.Type, from string: String, context: ModelContext?) throws -> T? {
+    guard let data = string.data(using: .utf8) else { return nil }
+    return try JSONDecoder().decode(T.self, from: data)
+}
+
+public func _jsonDataDecode<T: PersistentModel>(_ type: [T].Type, from string: String, context: ModelContext?) throws -> [T]? {
+    guard let data = string.data(using: .utf8) else { return nil }
+    let ids = try JSONDecoder().decode([String].self, from: data)
+    return ids.compactMap { id in
+        guard let ctx = context else { return nil }
+        let obj = T()
+        obj.persistentModelID = PersistentIdentifier(id: id)
+        obj._isFault = true
+        obj._modelContext = ctx
+        return obj
+    }
+}
+
+@_disfavoredOverload
+public func _jsonDataDecode<T: Codable>(_ type: [T].Type, from string: String, context: ModelContext?) throws -> [T]? {
+    guard let data = string.data(using: .utf8) else { return nil }
+    return try JSONDecoder().decode([T].self, from: data)
+}
+
 public nonisolated extension ModelContainer {
     func freshContext() -> ModelContext {
         mainContext
     }
 }
 
-extension Field: Codable where Value: Codable {
-    public init(from decoder: any Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        let decoded = try container.decode(Value.self)
-        self.defaultValue = decoded
-        self.value = decoded
-    }
-    
-    public func encode(to encoder: any Encoder) throws {
-        var container = encoder.singleValueContainer()
-        try container.encode(value ?? defaultValue!)
-    }
-}
+

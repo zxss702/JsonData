@@ -4,35 +4,6 @@ import XCTest
 @testable import JsonDataCore
 
 final class TransientTests: XCTestCase {
-    func testTransientFieldsAreExcludedFromEncoding() throws {
-        let note = TransientNote(title: "hello", cache: "skip", qualifiedCache: "skip-too")
-
-        let data = try JSONEncoder().encode(note)
-        let jsonObject = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-
-        XCTAssertEqual(jsonObject["title"] as? String, "hello")
-        XCTAssertNil(jsonObject["cache"])
-        XCTAssertNil(jsonObject["qualifiedCache"])
-        XCTAssertNotNil(jsonObject["persistentModelID"])
-    }
-
-    func testTransientFieldsAreIgnoredWhenDecoding() throws {
-        let json = """
-        {
-          "persistentModelID": "fixture-id",
-          "title": "hello",
-          "cache": "skip",
-          "qualifiedCache": "skip-too"
-        }
-        """
-
-        let note = try JSONDecoder().decode(TransientNote.self, from: Data(json.utf8))
-
-        XCTAssertEqual(note.title, "hello")
-        XCTAssertNil(note.cache)
-        XCTAssertNil(note.qualifiedCache)
-    }
-
     func testTransientFieldsDoNotRoundTripThroughModelContext() throws {
         let directory = try makeTemporaryDirectory(prefix: "JsonDataTransientTests")
         let dbURL = directory.appendingPathComponent("db.sqlite")
@@ -81,4 +52,3 @@ private final class TransientNote {
         self.qualifiedCache = qualifiedCache
     }
 }
-

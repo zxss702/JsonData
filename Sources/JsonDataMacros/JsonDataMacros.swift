@@ -640,7 +640,7 @@ private struct PredicateClosureParser {
                     if base.trimmedDescription == closureParamName {
                         let name = memberAccess.declName.baseName.text
                         if name == "persistentModelID" {
-                            return "id"
+                            return "_id"
                         }
                         return name
                     }
@@ -668,10 +668,12 @@ private struct PredicateClosureParser {
             try parseExpr(infix.leftOperand)
             sql += " "
             
+            let isNilOperand = infix.rightOperand.as(NilLiteralExprSyntax.self) != nil || infix.rightOperand.trimmedDescription == "nil"
+            
             let op = infix.operator.trimmedDescription
             switch op {
-            case "==": sql += "="
-            case "!=": sql += "!="
+            case "==": sql += isNilOperand ? "IS" : "="
+            case "!=": sql += isNilOperand ? "IS NOT" : "!="
             case "<", ">", "<=", ">=": sql += op
             case "&&": sql += "AND"
             case "||": sql += "OR"
@@ -679,7 +681,11 @@ private struct PredicateClosureParser {
             }
             
             sql += " "
-            try parseExpr(infix.rightOperand)
+            if isNilOperand {
+                sql += "NULL"
+            } else {
+                try parseExpr(infix.rightOperand)
+            }
             sql += ")"
         } else if let propName = getModelProperty(from: expr) {
             sql += "\\\"\(propName)\\\""

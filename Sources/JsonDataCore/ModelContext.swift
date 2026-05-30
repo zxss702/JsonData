@@ -4,12 +4,50 @@ import Synchronization
 
 import GRDB
 
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#elseif canImport(ucrt)
+import ucrt
+#endif
+
 private final class WeakRef {
     weak var value: (any PersistentModel)?
 
     init(_ value: any PersistentModel) {
         self.value = value
     }
+}
+
+private final class WeakContextRef: @unchecked Sendable {
+    weak var context: ModelContext?
+    init(_ context: ModelContext) {
+        self.context = context
+    }
+}
+
+private let globalContextsLock = Mutex([WeakContextRef]())
+
+@_cdecl("_JsonDataCore_PerformExitAutosave")
+func _JsonDataCore_PerformExitAutosave() {
+    globalContextsLock.withLock { contexts in
+        for ref in contexts {
+            try? ref.context?.save()
+        }
+    }
+}
+
+private let _registerAtExitOnce: Void = {
+    atexit {
+        _JsonDataCore_PerformExitAutosave()
+    }
+}()
+
+private func registerAtExit() {
+    _ = _registerAtExitOnce
 }
 
 public final class ModelContext: @unchecked Sendable {
@@ -19,12 +57,12 @@ public final class ModelContext: @unchecked Sendable {
     private let identityMapLock = Mutex(())
     private var identityMap: [PersistentIdentifier: WeakRef] = [:]
     
-    private var insertedModels: [PersistentIdentifier: any PersistentModel] = [:]
-    private var changedModels: [PersistentIdentifier: any PersistentModel] = [:]
-    private var deletedModels: [PersistentIdentifier: any PersistentModel] = [:]
+    internal var insertedModels: [PersistentIdentifier: any PersistentModel] = [:]
+    internal var changedModels: [PersistentIdentifier: any PersistentModel] = [:]
+    internal var deletedModels: [PersistentIdentifier: any PersistentModel] = [:]
     
     public var autosaveEnabled: Bool = true
-    private var pendingSaveTask: DispatchWorkItem?
+    private var pendingSaveTask: Task<Void, Never>?
     private let pendingSaveLock = Mutex(())
     
     public var hasChanges: Bool {
@@ -37,11 +75,15 @@ public final class ModelContext: @unchecked Sendable {
         guard autosaveEnabled else { return }
         pendingSaveLock.withLock { _ in
             pendingSaveTask?.cancel()
-            let task = DispatchWorkItem { [weak self] in
-                try? self?.save()
+            let task = Task { [weak self] in
+                do {
+                    try await Task.sleep(for: .seconds(0.1))
+                    try self?.save()
+                } catch {
+                    // Task was cancelled, do nothing
+                }
             }
             pendingSaveTask = task
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: task)
         }
     }
 
@@ -49,23 +91,34 @@ public final class ModelContext: @unchecked Sendable {
 
     public static let contextDidChange = Notification.Name("JsonData.ModelContextDidChange")
 
+    private func registerSelf() {
+        registerAtExit()
+        globalContextsLock.withLock { contexts in
+            contexts.removeAll { $0.context == nil }
+            contexts.append(WeakContextRef(self))
+        }
+    }
+
     init() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         baseURL = docs.appendingPathComponent("JsonDataStore")
         try? FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
         let dbURL = baseURL.appendingPathComponent("JsonData.sqlite")
         databaseQueue = try! DatabaseQueue(path: dbURL.path)
+        registerSelf()
     }
 
     public init(url: URL) {
         self.baseURL = url.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
         databaseQueue = try! DatabaseQueue(path: url.path)
+        registerSelf()
     }
     
     public init(_ container: ModelContainer) {
         self.baseURL = container.mainContext.baseURL
         self.databaseQueue = container.mainContext.databaseQueue
+        registerSelf()
     }
 
     private func _purgeStaleEntries() {

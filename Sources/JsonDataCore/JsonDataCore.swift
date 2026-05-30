@@ -9,7 +9,13 @@ public macro Model() = #externalMacro(module: "JsonDataMacros", type: "ModelMacr
 @attached(peer)
 public macro Transient() = #externalMacro(module: "JsonDataMacros", type: "TransientMacro")
 
-public struct Schema {
+public struct Schema: @unchecked Sendable {
+    public let models: [any PersistentModel.Type]
+    
+    public init(_ models: [any PersistentModel.Type]) {
+        self.models = models
+    }
+    
     public struct Attribute {
         public enum Option: Sendable {
             case unique

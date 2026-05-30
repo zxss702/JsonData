@@ -43,15 +43,18 @@ public final class ModelContainer: @unchecked Sendable {
 }
 
 public struct ModelConfiguration: Sendable {
+    public var schema: Schema?
     public var url: URL?
     public var isStoredInMemoryOnly: Bool
 
-    public init(isStoredInMemoryOnly: Bool = false) {
-        self.url = nil
+    public init(schema: Schema? = nil, isStoredInMemoryOnly: Bool = false, url: URL? = nil) {
+        self.schema = schema
+        self.url = url
         self.isStoredInMemoryOnly = isStoredInMemoryOnly
     }
 
     public init(url: URL) {
+        self.schema = nil
         self.url = url
         self.isStoredInMemoryOnly = false
     }

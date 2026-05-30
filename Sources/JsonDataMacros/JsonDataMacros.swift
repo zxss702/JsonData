@@ -389,7 +389,9 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
             // ── Generate _populateFromColumnValues ──
             let populateLines = persistentVariables.map { variable -> String in
                 let name = variable.name
+                let fallback = variable.isOptional ? " else { self._\(name) = Field(wrappedValue: nil) }" : ""
                 
+                let code: String
                 if variable.attributeOptions.contains(where: { $0.contains(".externalStorage") }) {
                     let fetchRef = """
                         let refId_\(name): String?
@@ -399,88 +401,86 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                     """
                     
                     if variable.baseType == "Data" {
-                        return """
+                        code = """
                         \(fetchRef)
-                        if let ref = refId_\(name), let ctx = context {
-                            if let fileData = try? ctx._loadExternalData(from: ref) {
-                                self._\(name) = Field(wrappedValue: fileData)
-                            }
-                        }
+                        if let ref = refId_\(name), let ctx = context, let fileData = try? ctx._loadExternalData(from: ref) {
+                            self._\(name) = Field(wrappedValue: fileData)
+                        }\(fallback)
                         """
                     } else {
-                        return """
+                        code = """
                         \(fetchRef)
-                        if let ref = refId_\(name), let ctx = context {
-                            if let fileData = try? ctx._loadExternalData(from: ref),
-                               let decoded = try? JSONDecoder().decode(\(variable.baseType).self, from: fileData) {
-                                self._\(name) = Field(wrappedValue: decoded)
-                            }
-                        }
+                        if let ref = refId_\(name), let ctx = context, let fileData = try? ctx._loadExternalData(from: ref),
+                           let decoded = try? JSONDecoder().decode(\(variable.baseType).self, from: fileData) {
+                            self._\(name) = Field(wrappedValue: decoded)
+                        }\(fallback)
                         """
                     }
+                    return code
                 }
                 
                 switch variable.baseType {
                 case "String":
-                    return """
+                    code = """
                     if let v = values["\(name)"] as? String {
                         self._\(name) = Field(wrappedValue: v)
-                    }
+                    }\(fallback)
                     """
                 case "Int", "Int8", "Int16", "Int32", "Int64", "UInt", "UInt8", "UInt16", "UInt32", "UInt64":
-                    return """
+                    code = """
                     if let v = values["\(name)"] as? Int64 {
                         self._\(name) = Field(wrappedValue: \(variable.baseType)(v))
                     } else if let v = values["\(name)"] as? Int {
                         self._\(name) = Field(wrappedValue: \(variable.baseType)(v))
-                    }
+                    }\(fallback)
                     """
                 case "Double", "Float":
-                    return """
+                    code = """
                     if let v = values["\(name)"] as? Double {
                         self._\(name) = Field(wrappedValue: \(variable.baseType)(v))
-                    }
+                    }\(fallback)
                     """
                 case "Bool":
-                    return """
+                    code = """
                     if let v = values["\(name)"] as? Int64 {
                         self._\(name) = Field(wrappedValue: v != 0)
                     } else if let v = values["\(name)"] as? Bool {
                         self._\(name) = Field(wrappedValue: v)
-                    }
+                    }\(fallback)
                     """
                 case "UUID":
-                    return """
+                    code = """
                     if let v = values["\(name)"] as? String, let uuid = UUID(uuidString: v) {
                         self._\(name) = Field(wrappedValue: uuid)
-                    }
+                    }\(fallback)
                     """
                 case "Date":
-                    return """
+                    code = """
                     if let v = values["\(name)"] as? String, let date = ISO8601DateFormatter().date(from: v) {
                         self._\(name) = Field(wrappedValue: date)
-                    }
+                    }\(fallback)
                     """
                 case "Data":
-                    return """
+                    code = """
                     if let v = values["\(name)"] as? Data {
                         self._\(name) = Field(wrappedValue: v)
-                    }
+                    }\(fallback)
                     """
                 case "URL":
-                    return """
+                    code = """
                     if let v = values["\(name)"] as? String, let url = URL(string: v) {
                         self._\(name) = Field(wrappedValue: url)
-                    }
+                    }\(fallback)
                     """
                 default:
-                    return """
+                    code = """
                     if let json = values["\(name)"] as? String,
                        let decoded = try? _jsonDataDecode(\(variable.baseType).self, from: json, context: context) {
                         self._\(name) = Field(wrappedValue: decoded)
-                    }
+                    }\(fallback)
                     """
                 }
+                return code
             }.joined(separator: "\n")
             
             let populateDecl = """

@@ -75,7 +75,7 @@ public final class ModelContext: @unchecked Sendable {
         guard autosaveEnabled else { return }
         pendingSaveLock.withLock { _ in
             pendingSaveTask?.cancel()
-            let task = Task { [weak self] in
+            let task = Task.detached { [weak self] in
                 do {
                     try await Task.sleep(for: .seconds(0.1))
                     try self?.save()
@@ -742,9 +742,14 @@ private func _databaseArgument(for value: Any?) -> DatabaseValueConvertible? {
     case let bool as Bool: return bool ? 1 : 0
     case let uuid as UUID: return uuid.uuidString
     case let date as Date: return ISO8601DateFormatter().string(from: date)
+    case let url as URL: return url.absoluteString
     case let data as Data: return data
     case nil: return nil
     default:
+        // Try Codable?
+        if let jsonObject = value as? (any Encodable) {
+            // ... wait, just return nil for now
+        }
         return nil
     }
 }

@@ -22,8 +22,19 @@ private final class IndexUniqueRecord {
 }
 
 final class CrossPlatformIndexUniqueTests: XCTestCase {
+    private func makeTemporaryDirectory(prefix: String) throws -> URL {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("\(prefix)-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        return tempDir
+    }
+
     func testIndexAndUniqueMacros() throws {
-        let container = try ModelContainer(for: IndexUniqueRecord.self)
+        let directory = try makeTemporaryDirectory(prefix: "IndexUnique")
+        let dbURL = directory.appendingPathComponent("db.sqlite")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        
+        let config = ModelConfiguration(url: dbURL)
+        let container = try ModelContainer(for: IndexUniqueRecord.self, configurations: config)
         let context = ModelContext(container)
         
         let rec1 = IndexUniqueRecord(firstName: "John", lastName: "Doe", age: 30, email: "john@example.com")

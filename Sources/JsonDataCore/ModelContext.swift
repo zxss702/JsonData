@@ -154,8 +154,16 @@ public final class ModelContext: @unchecked Sendable {
 
     private let tableInitLock = Mutex(())
     private var initializedTables: Set<String> = []
+    
+    public func _bootstrapSchema(_ schema: [any PersistentModel.Type]) {
+        try? databaseQueue.write { db in
+            for modelType in schema {
+                try? self._ensureTable(for: modelType, in: db)
+            }
+        }
+    }
 
-    private func _ensureTable<T: PersistentModel>(for type: T.Type, in db: Database? = nil) throws {
+    private func _ensureTable(for type: any PersistentModel.Type, in db: Database? = nil) throws {
         let tableName = _tableName(for: type)
         
         let alreadyInit = tableInitLock.withLock { _ -> Bool in

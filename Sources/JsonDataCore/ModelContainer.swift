@@ -15,6 +15,7 @@ public final class ModelContainer: @unchecked Sendable {
         self.schema = types
         self.configurations = [ModelConfiguration()]
         self.mainContext = ModelContext.shared
+        self.mainContext._bootstrapSchema(self.schema)
     }
     
     /// 使用指定模型类型数组初始化容器（默认路径）
@@ -22,6 +23,7 @@ public final class ModelContainer: @unchecked Sendable {
         self.schema = types
         self.configurations = [ModelConfiguration()]
         self.mainContext = ModelContext.shared
+        self.mainContext._bootstrapSchema(self.schema)
     }
     
     /// 使用自定义存储路径初始化容器
@@ -29,6 +31,7 @@ public final class ModelContainer: @unchecked Sendable {
         self.schema = types
         self.configurations = [ModelConfiguration(url: url)]
         self.mainContext = ModelContext(url: url)
+        self.mainContext._bootstrapSchema(self.schema)
     }
 
     public init(for types: any PersistentModel.Type..., configurations: ModelConfiguration...) throws {
@@ -39,6 +42,17 @@ public final class ModelContainer: @unchecked Sendable {
         } else {
             self.mainContext = ModelContext.shared
         }
+        self.mainContext._bootstrapSchema(self.schema)
+    }
+    public init(for schema: Schema, configurations: [ModelConfiguration]) throws {
+        self.schema = schema.models
+        self.configurations = configurations
+        if let firstConfig = configurations.first, let url = firstConfig.url {
+            self.mainContext = ModelContext(url: url)
+        } else {
+            self.mainContext = ModelContext.shared
+        }
+        self.mainContext._bootstrapSchema(self.schema)
     }
 }
 
@@ -52,11 +66,10 @@ public struct ModelConfiguration: Sendable {
         self.url = url
         self.isStoredInMemoryOnly = isStoredInMemoryOnly
     }
-
+    
     public init(url: URL) {
         self.schema = nil
         self.url = url
         self.isStoredInMemoryOnly = false
     }
 }
-

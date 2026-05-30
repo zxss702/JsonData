@@ -4,11 +4,13 @@ import SwiftSyntax
 import SwiftSyntaxBuilder
 import SwiftSyntaxMacros
 
+// @contributor
 struct MacroError: Error, CustomStringConvertible {
     let description: String
     init(_ description: String) { self.description = description }
 }
 
+// @contributor
 private struct PersistentStoredProperty {
     let name: String
     let type: String
@@ -47,6 +49,7 @@ private struct PersistentStoredProperty {
     }
 }
 
+// @contributor
 private extension AttributeListSyntax.Element {
     var attributeSyntax: AttributeSyntax? {
         switch self {
@@ -58,6 +61,7 @@ private extension AttributeListSyntax.Element {
     }
 }
 
+// @contributor
 private extension VariableDeclSyntax {
     var hasAccessor: Bool {
         bindings.contains { binding in
@@ -155,6 +159,7 @@ private extension VariableDeclSyntax {
     }
 }
 
+// @contributor
 private func persistentStoredProperties(
     in declaration: some DeclGroupSyntax
 ) -> [PersistentStoredProperty] {
@@ -163,6 +168,7 @@ private func persistentStoredProperties(
         .flatMap(\.persistentStoredProperties)
 }
 
+// @contributor
 public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
     public static func expansion(
         of node: AttributeSyntax,
@@ -367,7 +373,6 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                 case "Date":
                     return "values[\"\(name)\"] = (\(valExpr)).map { ISO8601DateFormatter().string(from: $0) }"
                 default:
-                    // Use dynamic overload resolution to handle relationships OR codable types
                     return """
                     if let v = \(valExpr) {
                         if let jsonText = try? _jsonDataEncode(v) {
@@ -566,6 +571,7 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
         }
 }
 
+// @contributor
 public struct TransientMacro: PeerMacro {
     public static func expansion(
         of node: AttributeSyntax,
@@ -576,6 +582,7 @@ public struct TransientMacro: PeerMacro {
     }
 }
 
+// @contributor
 public struct AttributeMacro: PeerMacro {
     public static func expansion(
         of node: AttributeSyntax,
@@ -584,6 +591,7 @@ public struct AttributeMacro: PeerMacro {
     ) throws -> [DeclSyntax] { [] }
 }
 
+// @contributor
 public struct RelationshipMacro: PeerMacro {
     public static func expansion(
         of node: AttributeSyntax,
@@ -592,6 +600,7 @@ public struct RelationshipMacro: PeerMacro {
     ) throws -> [DeclSyntax] { [] }
 }
 
+// @contributor
 public struct PredicateMacro: ExpressionMacro {
     public static func expansion(
         of node: some FreestandingMacroExpansionSyntax,
@@ -610,6 +619,7 @@ public struct PredicateMacro: ExpressionMacro {
     }
 }
 
+// @contributor
 private struct PredicateClosureParser {
     let closure: ClosureExprSyntax
     var sql: String = ""
@@ -737,6 +747,7 @@ private struct PredicateClosureParser {
     }
 }
 
+// @contributor
 public struct IndexMacro: DeclarationMacro {
     public static func expansion(
         of node: some FreestandingMacroExpansionSyntax,
@@ -746,6 +757,7 @@ public struct IndexMacro: DeclarationMacro {
     }
 }
 
+// @contributor
 public struct UniqueMacro: DeclarationMacro {
     public static func expansion(
         of node: some FreestandingMacroExpansionSyntax,
@@ -756,6 +768,7 @@ public struct UniqueMacro: DeclarationMacro {
 }
 
 @main
+// @contributor
 struct JsonDataPlugin: CompilerPlugin {
 
     let providingMacros: [Macro.Type] = [

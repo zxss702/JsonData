@@ -50,8 +50,11 @@ private func registerAtExit() {
     _ = _registerAtExitOnce
 }
 
+/// 数据模型上下文，管理持久化对象的生命周期与数据库操作。
 public final class ModelContext: @unchecked Sendable {
+    /// 共享的单例上下文实例。
     public static let shared = ModelContext()
+    /// 数据库文件所在的基础目录 URL。
     public let baseURL: URL
 
     private let identityMapLock = Mutex(())
@@ -61,16 +64,19 @@ public final class ModelContext: @unchecked Sendable {
     internal var changedModels: [PersistentIdentifier: any PersistentModel] = [:]
     internal var deletedModels: [PersistentIdentifier: any PersistentModel] = [:]
     
+    /// 是否启用自动保存。默认为 `true`。
     public var autosaveEnabled: Bool = true
     private var pendingSaveTask: Task<Void, Never>?
     private let pendingSaveLock = Mutex(())
     
+    /// 是否有未保存的更改。
     public var hasChanges: Bool {
         identityMapLock.withLock { _ in
             !insertedModels.isEmpty || !changedModels.isEmpty || !deletedModels.isEmpty
         }
     }
 
+    // @contributor
     private func _scheduleAutosave() {
         guard autosaveEnabled else { return }
         pendingSaveLock.withLock { _ in
@@ -89,8 +95,10 @@ public final class ModelContext: @unchecked Sendable {
 
     private let databaseQueue: DatabaseQueue
 
+    /// 上下文数据发生变更时发出的通知名称。
     public static let contextDidChange = Notification.Name("JsonData.ModelContextDidChange")
 
+    // @contributor
     private func registerSelf() {
         registerAtExit()
         globalContextsLock.withLock { contexts in
@@ -99,6 +107,7 @@ public final class ModelContext: @unchecked Sendable {
         }
     }
 
+    /// 使用默认文档目录创建上下文。
     init() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         baseURL = docs.appendingPathComponent("JsonDataStore")
@@ -108,6 +117,7 @@ public final class ModelContext: @unchecked Sendable {
         registerSelf()
     }
 
+    /// 使用指定的数据库文件 URL 创建上下文。
     public init(url: URL) {
         self.baseURL = url.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
@@ -115,22 +125,26 @@ public final class ModelContext: @unchecked Sendable {
         registerSelf()
     }
     
+    /// 从现有的模型容器创建上下文，共享其数据库连接。
     public init(_ container: ModelContainer) {
         self.baseURL = container.mainContext.baseURL
         self.databaseQueue = container.mainContext.databaseQueue
         registerSelf()
     }
 
+    // @contributor
     private func _purgeStaleEntries() {
         identityMap = identityMap.filter { $0.value.value != nil }
     }
 
+    // @contributor
     private func _postContextDidChange() {
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: Self.contextDidChange, object: nil)
         }
     }
 
+    // @contributor
     private func _tableName(for type: any PersistentModel.Type) -> String {
         if let schemaType = type as? any _JsonDataSchemaProviding.Type {
             return schemaType._jsonDataTableName
@@ -138,6 +152,7 @@ public final class ModelContext: @unchecked Sendable {
         return String(describing: type)
     }
 
+    // @contributor
     private func _columns(for type: any PersistentModel.Type) -> [_JsonDataColumnInfo] {
         if let schemaType = type as? any _JsonDataSchemaProviding.Type {
             return schemaType._jsonDataColumns
@@ -145,6 +160,7 @@ public final class ModelContext: @unchecked Sendable {
         return []
     }
 
+    // @contributor
     fileprivate static func _keyPathResolver(for type: any PersistentModel.Type) -> ((AnyKeyPath) -> String?)? {
         guard let schemaType = type as? any _JsonDataSchemaProviding.Type else { return nil }
         return { keyPath in
@@ -155,6 +171,7 @@ public final class ModelContext: @unchecked Sendable {
     private let tableInitLock = Mutex(())
     private var initializedTables: Set<String> = []
     
+    /// 根据给定的模型类型列表初始化数据库表结构。此方法供内部使用。
     public func _bootstrapSchema(_ schema: [any PersistentModel.Type]) {
         try? databaseQueue.write { db in
             for modelType in schema {
@@ -163,6 +180,7 @@ public final class ModelContext: @unchecked Sendable {
         }
     }
 
+    // @contributor
     private func _ensureTable(for type: any PersistentModel.Type, in db: Database? = nil) throws {
         let tableName = _tableName(for: type)
         
@@ -223,6 +241,7 @@ public final class ModelContext: @unchecked Sendable {
         }
     }
 
+    // @contributor
     private func _sqlType(for kind: _JsonDataColumnKind) -> String {
         switch kind {
         case .string, .uuid, .date, .codableJSON, .url: return "TEXT"
@@ -235,6 +254,7 @@ public final class ModelContext: @unchecked Sendable {
         }
     }
 
+    // @contributor
     private func _sqlDefault(for kind: _JsonDataColumnKind) -> String {
         switch kind {
         case .string, .uuid, .date, .codableJSON, .url:
@@ -248,12 +268,14 @@ public final class ModelContext: @unchecked Sendable {
         }
     }
 
+    // @contributor
     private func _quote(identifier: String) -> String {
         "\"" + identifier.replacingOccurrences(of: "\"", with: "\"\"") + "\""
     }
 
     // MARK: - Save
 
+    /// 标记模型已发生更改，触发自动保存。由属性变更观察器调用。
     public func _modelDidChange(_ model: any PersistentModel) {
         identityMapLock.withLock { _ in
             let id = model.persistentModelID
@@ -264,6 +286,7 @@ public final class ModelContext: @unchecked Sendable {
         _scheduleAutosave()
     }
 
+    // @contributor
     private func _saveModel(_ model: any PersistentModel, in db: Database) throws {
         let modelType = type(of: model)
         try _ensureTable(for: modelType, in: db)
@@ -289,6 +312,7 @@ public final class ModelContext: @unchecked Sendable {
         try db.execute(sql: sql, arguments: updateArguments)
     }
 
+    /// 将所有未保存的插入、更新和删除操作写入数据库。
     public func save() throws {
         let (toInsert, toUpdate, toDelete) = identityMapLock.withLock { _ -> ([any PersistentModel], [any PersistentModel], [any PersistentModel]) in
             let inserts = Array(insertedModels.values)
@@ -338,6 +362,7 @@ public final class ModelContext: @unchecked Sendable {
 
     // MARK: - Insert / Delete
 
+    /// 将模型插入上下文，在下一次保存时写入数据库。
     public func insert<T: PersistentModel>(_ model: T) {
         let shouldReturn = identityMapLock.withLock { _ -> Bool in
             if insertedModels[model.persistentModelID] != nil || identityMap[model.persistentModelID] != nil {
@@ -356,6 +381,7 @@ public final class ModelContext: @unchecked Sendable {
         _scheduleAutosave()
     }
     
+    // @contributor
     private func _processCascadeInsert(for model: any PersistentModel) {
         guard let schemaType = type(of: model) as? any _JsonDataSchemaProviding.Type else { return }
         let relationships = schemaType._jsonDataRelationships
@@ -380,6 +406,7 @@ public final class ModelContext: @unchecked Sendable {
         }
     }
 
+    /// 将模型标记为待删除，在下一次保存时从数据库移除。
     public func delete<T: PersistentModel>(_ model: T) {
         let shouldReturn = identityMapLock.withLock { _ -> Bool in
             let id = model.persistentModelID
@@ -400,6 +427,7 @@ public final class ModelContext: @unchecked Sendable {
         _scheduleAutosave()
     }
     
+    // @contributor
     private func _processCascadeDelete(for model: any PersistentModel) {
         guard let schemaType = type(of: model) as? any _JsonDataSchemaProviding.Type else { return }
         let cascadeRelationships = schemaType._jsonDataRelationships.filter { $0.deleteRule == .cascade }
@@ -428,6 +456,7 @@ public final class ModelContext: @unchecked Sendable {
         }
     }
 
+    // @contributor
     private func _fieldStorageValue(from storage: Any) -> Any? {
         let mirror = Mirror(reflecting: storage)
         for child in mirror.children where child.label == "value" || child.label == "defaultValue" {
@@ -445,6 +474,7 @@ public final class ModelContext: @unchecked Sendable {
 
     // MARK: - Fetch
 
+    /// 根据查询描述符和限制条件从数据库检索模型实例。
     public func fetch<T: PersistentModel>(
         _ descriptor: FetchDescriptor<T> = FetchDescriptor<T>(),
         limit: Int? = nil
@@ -507,6 +537,7 @@ public final class ModelContext: @unchecked Sendable {
         return results
     }
 
+    /// 创建数据观察器，用于监听查询结果的实时变化。
     public func observe<T: PersistentModel & Sendable>(
         _ descriptor: FetchDescriptor<T> = FetchDescriptor<T>()
     ) -> ValueObservation<ValueReducers.Fetch<[T]>> {
@@ -548,6 +579,7 @@ public final class ModelContext: @unchecked Sendable {
     }
 
 
+    /// 在主线程启动数据观察，当查询结果变化时回调 `onChange`。
     @MainActor
     public func startObservation<T: PersistentModel & Sendable>(
         _ descriptor: FetchDescriptor<T> = FetchDescriptor<T>(),
@@ -558,6 +590,7 @@ public final class ModelContext: @unchecked Sendable {
         return obs.start(in: databaseQueue, onError: onError, onChange: onChange)
     }
 
+    /// 通过持久化标识符查找并返回模型实例。
     public func model<T: PersistentModel>(for id: PersistentIdentifier) -> T? {
         if let cached = identityMapLock.withLock({ _ -> T? in
             if let ref = identityMap[id], let cached = ref.value as? T, !cached._isFault, !cached._isFaulting {
@@ -579,6 +612,7 @@ public final class ModelContext: @unchecked Sendable {
         }
     }
 
+    // @contributor
     private func _loadModel<T: PersistentModel>(for id: PersistentIdentifier) throws -> T? {
         try _ensureTable(for: T.self)
         let tableName = _tableName(for: T.self)
@@ -605,6 +639,7 @@ public final class ModelContext: @unchecked Sendable {
         return model
     }
 
+    /// 将惰性加载的模型实例填充完整数据。此方法供内部使用。
     public func _faultIn<T: PersistentModel>(_ model: T) {
         do {
             guard let fullModel: T = try _loadModel(for: model.persistentModelID) else { return }
@@ -621,6 +656,7 @@ public final class ModelContext: @unchecked Sendable {
 
     // MARK: - Row ↔ Values Helpers
 
+    // @contributor
     private func _rowToValues(_ row: Row, columns: [_JsonDataColumnInfo]) -> [String: Any?] {
         var values: [String: Any?] = [:]
         values["_id"] = row["_id"] as String
@@ -644,6 +680,7 @@ public final class ModelContext: @unchecked Sendable {
 
     // MARK: - Query Building
 
+    // @contributor
     private func _buildFetchQuery<T: PersistentModel>(
         for type: T.Type,
         descriptor: FetchDescriptor<T>,
@@ -682,6 +719,7 @@ public final class ModelContext: @unchecked Sendable {
         return (sql, arguments)
     }
 
+    // @contributor
     private func _buildOrderByClause<T: PersistentModel>(
             _ sortBy: [SortDescriptor<T>],
             columns: [_JsonDataColumnInfo]
@@ -754,15 +792,12 @@ private func _databaseArgument(for value: Any?) -> DatabaseValueConvertible? {
     case let data as Data: return data
     case nil: return nil
     default:
-        // Try Codable?
-        if let jsonObject = value as? (any Encodable) {
-            // ... wait, just return nil for now
-        }
         return nil
     }
 }
 
 extension ModelContext {
+    /// 将外部存储的数据写入文件系统。此方法供内部使用。
     public func _saveExternalData(_ data: Data, modelID: PersistentIdentifier, propertyName: String) throws -> String {
         let extDir = baseURL.appendingPathComponent(".externalStorage")
         try FileManager.default.createDirectory(at: extDir, withIntermediateDirectories: true)
@@ -772,6 +807,7 @@ extension ModelContext {
         return filename
     }
 
+    /// 从文件系统读取外部存储的数据。此方法供内部使用。
     public func _loadExternalData(from reference: String) throws -> Data {
         let extDir = baseURL.appendingPathComponent(".externalStorage")
         let fileUrl = extDir.appendingPathComponent(reference)

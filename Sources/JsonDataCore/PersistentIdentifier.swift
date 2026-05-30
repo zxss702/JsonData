@@ -2,6 +2,7 @@
 import Foundation
 import GRDB
 
+/// 持久化标识符，用作 JSON 数据模型的唯一标识，支持哈希、比较及数据库值转换。
 public struct PersistentIdentifier: Hashable, Identifiable, Equatable, Comparable, Sendable, DatabaseValueConvertible {
     public let id: String
     

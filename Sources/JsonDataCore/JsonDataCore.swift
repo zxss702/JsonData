@@ -1,14 +1,17 @@
 import Foundation
 @_exported import Observation
 
+/// 将类标记为持久化模型，自动生成 ``PersistentModel`` 协议所需的全部成员及数据库映射元数据。
 @attached(extension, conformances: PersistentModel, _JsonDataSchemaProviding)
 @attached(memberAttribute)
 @attached(member, names: named(_observationRegistrar), named(modelContext), named(_modelContext), named(_isFault), named(_isFaulting), named(access), named(withMutation), named(didChange), named(fault), named(_copy), named(init), named(persistentModelID), named(_jsonDataTableName), named(_jsonDataColumns), named(_jsonDataRelationships), named(_jsonDataPropertyName), named(_isSyncingInverse), named(_jsonDataSetValue), named(_jsonDataIndexes), named(_jsonDataUniques), named(_toColumnValues), named(_populateFromColumnValues))
 public macro Model() = #externalMacro(module: "JsonDataMacros", type: "ModelMacro")
 
+/// 标记某个属性为瞬态，不会持久化到数据库。
 @attached(peer)
 public macro Transient() = #externalMacro(module: "JsonDataMacros", type: "TransientMacro")
 
+/// 描述数据模型的整体结构，聚合所有参与持久化的模型类型。
 public struct Schema: @unchecked Sendable {
     public let models: [any PersistentModel.Type]
     
@@ -16,6 +19,7 @@ public struct Schema: @unchecked Sendable {
         self.models = models
     }
     
+    /// 定义模型属性的元数据与约束选项（如唯一性、外部存储等）。
     public struct Attribute {
         public enum Option: Sendable {
             case unique
@@ -25,6 +29,7 @@ public struct Schema: @unchecked Sendable {
         }
     }
     
+    /// 定义模型间关系的元数据，支持级联删除等规则。
     public struct Relationship {
         public enum DeleteRule: Sendable {
             case nullify
@@ -34,21 +39,27 @@ public struct Schema: @unchecked Sendable {
     }
 }
 
+/// 声明模型属性的元数据选项，如唯一性、外部存储等。
 @attached(peer)
 public macro Attribute(_ options: Schema.Attribute.Option...) = #externalMacro(module: "JsonDataMacros", type: "AttributeMacro")
 
+/// 声明模型间的关系，可指定删除规则与逆向 keyPath，用于自动维护双向关系的完整性。
 @attached(peer)
 public macro Relationship(deleteRule: Schema.Relationship.DeleteRule = .nullify, inverse: AnyKeyPath? = nil) = #externalMacro(module: "JsonDataMacros", type: "RelationshipMacro")
 
+/// 构建类型安全的查询谓词，用于在 ``FetchDescriptor`` 中表达过滤条件。
 @freestanding(expression)
 public macro Predicate<T>(_ body: (T) -> Bool) -> JsonDataCore.Predicate<T> = #externalMacro(module: "JsonDataMacros", type: "PredicateMacro")
 
+/// 声明模型上的索引，用于加速按指定属性组合的查询。
 @freestanding(declaration)
 public macro Index<T>(_ groups: [PartialKeyPath<T>]...) = #externalMacro(module: "JsonDataMacros", type: "IndexMacro")
 
+/// 声明模型属性上的唯一性约束，确保指定属性组合的值在数据库中不重复。
 @freestanding(declaration)
 public macro Unique<T>(_ groups: [PartialKeyPath<T>]...) = #externalMacro(module: "JsonDataMacros", type: "UniqueMacro")
 
+/// 数据模型的基础协议，所有持久化模型均需遵循。提供 Fault、变更追踪、逆关系同步及标识符等核心能力。
 public protocol PersistentModel: AnyObject, Observable, Hashable, Equatable, Identifiable {
     var persistentModelID: PersistentIdentifier { get set }
     var modelContext: ModelContext? { get }
@@ -80,6 +91,7 @@ public extension PersistentModel {
 
 public typealias SortDescriptor<T: PersistentModel> = Foundation.SortDescriptor<T>
 
+/// 描述一次数据查询的配置，包括排序、过滤、分页及预取策略。
 public struct FetchDescriptor<T: PersistentModel>: @unchecked Sendable {
     public var sortBy: [SortDescriptor<T>]
     public var predicate: Predicate<T>?
@@ -108,6 +120,7 @@ extension Optional: _OptionalFieldProtocol {
     public static var _noneValue: Any { Self.none as Any }
 }
 
+/// 用于 ``PersistentModel`` 的属性包装器，提供惰性加载与变更追踪能力，支持可选值、默认值及逆关系同步。
 @propertyWrapper
 public struct Field<Value> {
     public var value: Value?
@@ -206,28 +219,33 @@ public struct Field<Value> {
     }
 }
 
+/// 将 ``PersistentModel`` 实例编码为其持久化标识符字符串。
 public func _jsonDataEncode<T: PersistentModel>(_ value: T) throws -> String? {
     return value.persistentModelID.id
 }
 
+/// 将 Codable 值编码为 JSON 字符串。
 @_disfavoredOverload
 public func _jsonDataEncode<T: Codable>(_ value: T) throws -> String? {
     let data = try JSONEncoder().encode(value)
     return String(decoding: data, as: UTF8.self)
 }
 
+/// 将一组 ``PersistentModel`` 实例编码为包含其持久化标识符的 JSON 字符串。
 public func _jsonDataEncode<T: PersistentModel>(_ value: [T]) throws -> String? {
     let ids = value.map { $0.persistentModelID.id }
     let data = try JSONEncoder().encode(ids)
     return String(decoding: data, as: UTF8.self)
 }
 
+/// 将一组 Codable 值编码为 JSON 字符串。
 @_disfavoredOverload
 public func _jsonDataEncode<T: Codable>(_ value: [T]) throws -> String? {
     let data = try JSONEncoder().encode(value)
     return String(decoding: data, as: UTF8.self)
 }
 
+/// 将 JSON 字符串解码为 ``PersistentModel`` 的 Fault 空壳对象，惰性加载真实数据。
 public func _jsonDataDecode<T: PersistentModel>(_ type: T.Type, from string: String, context: ModelContext?) throws -> T? {
     let obj = T()
     obj.persistentModelID = PersistentIdentifier(id: string)
@@ -236,12 +254,14 @@ public func _jsonDataDecode<T: PersistentModel>(_ type: T.Type, from string: Str
     return obj
 }
 
+/// 将 JSON 字符串解码为指定的 Codable 类型实例。
 @_disfavoredOverload
 public func _jsonDataDecode<T: Codable>(_ type: T.Type, from string: String, context: ModelContext?) throws -> T? {
     guard let data = string.data(using: .utf8) else { return nil }
     return try JSONDecoder().decode(T.self, from: data)
 }
 
+/// 将 JSON 字符串解码为一组 ``PersistentModel`` 的 Fault 空壳对象数组。
 public func _jsonDataDecode<T: PersistentModel>(_ type: [T].Type, from string: String, context: ModelContext?) throws -> [T]? {
     guard let data = string.data(using: .utf8) else { return nil }
     let ids = try JSONDecoder().decode([String].self, from: data)
@@ -255,12 +275,14 @@ public func _jsonDataDecode<T: PersistentModel>(_ type: [T].Type, from string: S
     }
 }
 
+/// 将 JSON 字符串解码为 Codable 类型的数组。
 @_disfavoredOverload
 public func _jsonDataDecode<T: Codable>(_ type: [T].Type, from string: String, context: ModelContext?) throws -> [T]? {
     guard let data = string.data(using: .utf8) else { return nil }
     return try JSONDecoder().decode([T].self, from: data)
 }
 
+/// 创建与当前容器关联的独立 ``ModelContext`` 实例，用于独立的数据操作。
 public nonisolated extension ModelContainer {
     func freshContext() -> ModelContext {
         mainContext

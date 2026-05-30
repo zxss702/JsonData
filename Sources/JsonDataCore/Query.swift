@@ -4,6 +4,7 @@ import Observation
 import GRDB
 
 @Observable
+/// 管理查询状态和数据库观察，自动响应数据变更并更新结果集。
 public final class QueryState<Element: PersistentModel & Sendable>: @unchecked Sendable {
     public var items: [Element] = []
     private var descriptor: FetchDescriptor<Element>
@@ -19,11 +20,11 @@ public final class QueryState<Element: PersistentModel & Sendable>: @unchecked S
     }
     
     @MainActor
+    /// 将查询状态绑定到指定的模型上下文，开始监听数据库变更。
     public func attach(to context: ModelContext) {
         guard !isAttached else { return }
         isAttached = true
         
-        // Initial fetch
         self.items = (try? context.fetch(descriptor)) ?? []
         
         self.observationTask = context.startObservation(
@@ -43,6 +44,7 @@ private struct ModelContextKey: EnvironmentKey {
     static let defaultValue: ModelContext? = nil
 }
 
+/// 提供 SwiftUI 环境中的模型上下文访问。
 public extension EnvironmentValues {
     var modelContext: ModelContext? {
         get { self[ModelContextKey.self] }
@@ -52,6 +54,7 @@ public extension EnvironmentValues {
 
 @MainActor
 @propertyWrapper
+/// SwiftUI 属性包装器，根据过滤和排序条件自动查询数据，并响应环境中的模型上下文。
 public struct Query<Element: PersistentModel & Sendable>: DynamicProperty {
     @Environment(\.modelContext) private var modelContext: ModelContext?
     @State private var state: QueryState<Element>
@@ -78,6 +81,7 @@ public struct Query<Element: PersistentModel & Sendable>: DynamicProperty {
 
 @MainActor
 @propertyWrapper
+/// 属性包装器，根据过滤和排序条件从模型上下文中查询数据。
 public struct Query<Element: PersistentModel & Sendable> {
     private var state: QueryState<Element>
     

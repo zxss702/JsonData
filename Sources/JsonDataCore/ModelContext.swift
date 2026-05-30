@@ -225,8 +225,7 @@ public final class ModelContext: @unchecked Sendable {
 
     private func _sqlType(for kind: _JsonDataColumnKind) -> String {
         switch kind {
-        case .string, .uuid, .date, .codableJSON:
-            return "TEXT"
+        case .string, .uuid, .date, .codableJSON, .url: return "TEXT"
         case .integer, .bool:
             return "INTEGER"
         case .double:
@@ -238,7 +237,7 @@ public final class ModelContext: @unchecked Sendable {
 
     private func _sqlDefault(for kind: _JsonDataColumnKind) -> String {
         switch kind {
-        case .string, .uuid, .date, .codableJSON:
+        case .string, .uuid, .date, .codableJSON, .url:
             return "''"
         case .integer, .bool:
             return "0"
@@ -627,7 +626,7 @@ public final class ModelContext: @unchecked Sendable {
         values["_id"] = row["_id"] as String
         for col in columns {
             switch col.kind {
-            case .string, .uuid, .date, .codableJSON:
+            case .string, .uuid, .date, .codableJSON, .url:
                 values[col.columnName] = row[col.columnName] as String?
             case .integer:
                 values[col.columnName] = row[col.columnName] as Int64?
@@ -736,8 +735,17 @@ private func _jsonDataColumn(
 private func _databaseArgument(for value: Any?) -> DatabaseValueConvertible? {
     switch value {
     case let int as Int: return int
+    case let int8 as Int8: return Int64(int8)
+    case let int16 as Int16: return Int64(int16)
+    case let int32 as Int32: return Int64(int32)
     case let int64 as Int64: return int64
+    case let uint as UInt: return Int64(uint)
+    case let uint8 as UInt8: return Int64(uint8)
+    case let uint16 as UInt16: return Int64(uint16)
+    case let uint32 as UInt32: return Int64(uint32)
+    case let uint64 as UInt64: return Int64(uint64)
     case let double as Double: return double
+    case let float as Float: return Double(float)
     case let string as String: return string
     case let bool as Bool: return bool ? 1 : 0
     case let uuid as UUID: return uuid.uuidString

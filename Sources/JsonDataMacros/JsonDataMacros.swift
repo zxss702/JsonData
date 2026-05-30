@@ -27,9 +27,9 @@ private struct PersistentStoredProperty {
         switch baseType {
         case "String":
             return "_JsonDataColumnKind.string"
-        case "Int":
+        case "Int", "Int8", "Int16", "Int32", "Int64", "UInt", "UInt8", "UInt16", "UInt32", "UInt64":
             return "_JsonDataColumnKind.integer"
-        case "Double":
+        case "Double", "Float":
             return "_JsonDataColumnKind.double"
         case "Bool":
             return "_JsonDataColumnKind.bool"
@@ -39,6 +39,8 @@ private struct PersistentStoredProperty {
             return "_JsonDataColumnKind.date"
         case "Data":
             return "_JsonDataColumnKind.data"
+        case "URL":
+            return "_JsonDataColumnKind.url"
         default:
             return "_JsonDataColumnKind.codableJSON"
         }
@@ -354,7 +356,7 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                 }
                 
                 switch variable.baseType {
-                case "String", "Int", "Double", "Data":
+                case "String", "Int", "Int8", "Int16", "Int32", "Int64", "UInt", "UInt8", "UInt16", "UInt32", "UInt64", "Double", "Float", "Data", "URL":
                     return "values[\"\(name)\"] = \(valExpr)"
                 case "Bool":
                     return """
@@ -463,6 +465,12 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                     return """
                     if let v = values["\(name)"] as? Data {
                         self._\(name) = Field(wrappedValue: v)
+                    }
+                    """
+                case "URL":
+                    return """
+                    if let v = values["\(name)"] as? String, let url = URL(string: v) {
+                        self._\(name) = Field(wrappedValue: url)
                     }
                     """
                 default:

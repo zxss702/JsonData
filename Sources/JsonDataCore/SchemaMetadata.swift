@@ -10,6 +10,7 @@ public enum _JsonDataColumnKind: String, Sendable {
     case date
     case data
     case codableJSON
+    case url
 }
 
 public struct _JsonDataColumnInfo: Sendable, Equatable {

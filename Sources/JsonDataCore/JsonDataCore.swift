@@ -100,6 +100,14 @@ public struct FetchDescriptor<T: PersistentModel>: @unchecked Sendable {
     }
 }
 
+/// 运行时判断 Value 是否为 Optional 类型，并安全地构造 nil
+public protocol _OptionalFieldProtocol {
+    static var _noneValue: Any { get }
+}
+extension Optional: _OptionalFieldProtocol {
+    public static var _noneValue: Any { Self.none as Any }
+}
+
 @propertyWrapper
 public struct Field<Value> {
     public var value: Value?
@@ -126,9 +134,13 @@ public struct Field<Value> {
             instance.access(keyPath: wrappedKeyPath)
             instance.fault()
             let storage = instance[keyPath: storageKeyPath]
-            // fault() 之后 value 一定会被填充；
-            // 非 fault 对象则通过用户 init 设置了 defaultValue
-            return storage.value ?? storage.defaultValue!
+            if let v = storage.value { return v }
+            if let d = storage.defaultValue { return d }
+            // 对齐 SwiftData：可选属性在 DB 为 NULL 时返回 nil
+            if let optType = Value.self as? any _OptionalFieldProtocol.Type {
+                return optType._noneValue as! Value
+            }
+            fatalError("Field<\(Value.self)> has no value and no default")
         }
         set {
             instance.withMutation(keyPath: wrappedKeyPath) {

@@ -470,19 +470,9 @@ public final class ModelContext: @unchecked Sendable {
                         continue
                     }
                     
-                    if descriptor.predicate == nil {
-                        let fault = T()
-                        fault.persistentModelID = id
-                        fault._isFault = true
-                        fault._modelContext = self
-                        self.identityMap[id] = WeakRef(fault)
-                        results.append(fault)
-                        continue
-                    }
-
-                    let values = self._rowToValues(row, columns: cols)
                     let model = T()
                     model.persistentModelID = id
+                    let values = self._rowToValues(row, columns: cols)
                     if let schemaModel = model as? any _JsonDataSchemaProviding {
                         schemaModel._populateFromColumnValues(values, context: self)
                     }

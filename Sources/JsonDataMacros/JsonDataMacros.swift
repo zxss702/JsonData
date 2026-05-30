@@ -331,7 +331,7 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                 let name = variable.name
                 let valExpr: String
                 if variable.isOptional {
-                    valExpr = "(self._\(name).value ?? self._\(name).defaultValue)?.flatMap { $0 }"
+                    valExpr = "(self._\(name).value ?? self._\(name).defaultValue)?.flatMap({ $0 })"
                 } else {
                     valExpr = "(self._\(name).value ?? self._\(name).defaultValue)"
                 }
@@ -477,9 +477,6 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
             
             let populateDecl = """
             public func _populateFromColumnValues(_ values: [String: Any?], context: ModelContext?) {
-                if let id = values["id"] as? String {
-                    self.persistentModelID = PersistentIdentifier(id: id)
-                }
                 \(populateLines)
             }
             """

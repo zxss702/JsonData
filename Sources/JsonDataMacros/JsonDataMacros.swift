@@ -427,18 +427,18 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                         self._\(name) = Field(wrappedValue: v)
                     }
                     """
-                case "Int":
+                case "Int", "Int8", "Int16", "Int32", "Int64", "UInt", "UInt8", "UInt16", "UInt32", "UInt64":
                     return """
                     if let v = values["\(name)"] as? Int64 {
-                        self._\(name) = Field(wrappedValue: Int(v))
+                        self._\(name) = Field(wrappedValue: \(variable.baseType)(v))
                     } else if let v = values["\(name)"] as? Int {
-                        self._\(name) = Field(wrappedValue: v)
+                        self._\(name) = Field(wrappedValue: \(variable.baseType)(v))
                     }
                     """
-                case "Double":
+                case "Double", "Float":
                     return """
                     if let v = values["\(name)"] as? Double {
-                        self._\(name) = Field(wrappedValue: v)
+                        self._\(name) = Field(wrappedValue: \(variable.baseType)(v))
                     }
                     """
                 case "Bool":

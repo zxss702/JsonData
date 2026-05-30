@@ -390,15 +390,16 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                 
                 if variable.attributeOptions.contains(where: { $0.contains(".externalStorage") }) {
                     let fetchRef = """
-                        var refId: String? = nil
-                        if let r = values["\(name)"] as? String { refId = r }
-                        else if let d = values["\(name)"] as? Data { refId = String(data: d, encoding: .utf8) }
+                        let refId_\(name): String?
+                        if let r = values["\(name)"] as? String { refId_\(name) = r }
+                        else if let d = values["\(name)"] as? Data { refId_\(name) = String(data: d, encoding: .utf8) }
+                        else { refId_\(name) = nil }
                     """
                     
                     if variable.baseType == "Data" {
                         return """
                         \(fetchRef)
-                        if let ref = refId, let ctx = context {
+                        if let ref = refId_\(name), let ctx = context {
                             if let fileData = try? ctx._loadExternalData(from: ref) {
                                 self._\(name) = Field(wrappedValue: fileData)
                             }
@@ -407,7 +408,7 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                     } else {
                         return """
                         \(fetchRef)
-                        if let ref = refId, let ctx = context {
+                        if let ref = refId_\(name), let ctx = context {
                             if let fileData = try? ctx._loadExternalData(from: ref),
                                let decoded = try? JSONDecoder().decode(\(variable.baseType).self, from: fileData) {
                                 self._\(name) = Field(wrappedValue: decoded)

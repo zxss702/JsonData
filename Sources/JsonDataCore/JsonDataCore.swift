@@ -120,6 +120,14 @@ extension Optional: _OptionalFieldProtocol {
     public static var _noneValue: Any { Self.none as Any }
 }
 
+/// 运行时判断 Value 是否为 Array 类型，并安全地构造空数组
+public protocol _ArrayFieldProtocol {
+    static var _emptyArray: Any { get }
+}
+extension Array: _ArrayFieldProtocol {
+    public static var _emptyArray: Any { Self() as Any }
+}
+
 /// 用于 ``PersistentModel`` 的属性包装器，提供惰性加载与变更追踪能力，支持可选值、默认值及逆关系同步。
 @propertyWrapper
 public struct Field<Value> {
@@ -152,6 +160,10 @@ public struct Field<Value> {
             // 对齐 SwiftData：可选属性在 DB 为 NULL 时返回 nil
             if let optType = Value.self as? any _OptionalFieldProtocol.Type {
                 return optType._noneValue as! Value
+            }
+            // 对齐 SwiftData：数组类型未建立关系或为 NULL 时返回空数组
+            if let arrayType = Value.self as? any _ArrayFieldProtocol.Type {
+                return arrayType._emptyArray as! Value
             }
             fatalError("Field<\(Value.self)> has no value and no default")
         }

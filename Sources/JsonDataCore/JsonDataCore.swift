@@ -177,6 +177,26 @@ public struct Field<Value> {
                 if !instance._isFaulting {
                     instance._modelContext?._modelDidChange(instance)
                     
+                    if let ctx = instance._modelContext {
+                        func _insert(_ obj: any PersistentModel) {
+                            if obj._modelContext == nil {
+                                obj._modelContext = ctx
+                                obj._isFault = false
+                                let id = obj.persistentModelID
+                                ctx.identityMapLock.withLock { _ in
+                                    ctx.identityMap[id] = WeakRef(obj)
+                                }
+                                ctx.insertedModels[id] = obj
+                                ctx._scheduleAutosave()
+                            }
+                        }
+                        if let newObj = newValue as? any PersistentModel {
+                            _insert(newObj)
+                        } else if let newArr = newValue as? [any PersistentModel] {
+                            for newObj in newArr { _insert(newObj) }
+                        }
+                    }
+                    
                     if !instance._isSyncingInverse,
                        let schemaType = type(of: instance) as? any _JsonDataSchemaProviding.Type,
                        let propName = schemaType._jsonDataPropertyName(for: wrappedKeyPath),

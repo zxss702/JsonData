@@ -479,6 +479,9 @@ public final class ModelContext: @unchecked Sendable {
         _ descriptor: FetchDescriptor<T> = FetchDescriptor<T>(),
         limit: Int? = nil
     ) throws -> [T] {
+        if descriptor.includePendingChanges && (!insertedModels.isEmpty || !changedModels.isEmpty || !deletedModels.isEmpty) {
+            try? save()
+        }
         let effectiveLimit = descriptor.fetchLimit ?? limit
         if let effectiveLimit, effectiveLimit <= 0 {
             return []

@@ -112,6 +112,33 @@ struct TodoListView: View {
 
 > **注意：** 在非 SwiftUI 或 Skip.io 环境（如服务端业务流）中使用时，需要手动在初始化时向 `@Query` 传入参数：`@Query(context: ModelContext.shared)`。
 
+### Windows 构建要求
+
+JsonDataCore 在 Linux / Windows 上通过 GRDB 的 `ValueObservation` 实现 `@Query` 的响应式更新。GRDB 在 Windows 上默认启用 `SQLITE_ENABLE_SNAPSHOT`，因此消费方必须自行编译并链接带 snapshot 支持的 SQLite，而不能使用未启用该选项的预编译库。
+
+编译 SQLite amalgamation 时需启用以下选项（与 GRDB 默认一致）：
+
+- `-DSQLITE_ENABLE_SNAPSHOT` — 提供 `sqlite3_snapshot_*` 符号，满足 ValueObservation
+- `-DSQLITE_ENABLE_FTS5` — 全文检索支持
+
+链接时通过 Swift Package Manager 传入头文件与库路径，例如：
+
+```powershell
+swift build -c release `
+  -Xcc -I"path/to/prebuilt_sqlite/windows_x64" `
+  -Xlinker -L"path/to/prebuilt_sqlite/windows_x64" `
+  -Xlinker sqlite3.lib
+```
+
+MSVC 编译示例：
+
+```powershell
+cl.exe /c /O2 /DSQLITE_ENABLE_SNAPSHOT /DSQLITE_ENABLE_FTS5 sqlite3.c
+lib.exe /OUT:sqlite3.lib sqlite3.obj
+```
+
+更多细节见 GRDB 官方文档 [CustomSQLiteBuilds.md](https://github.com/groue/GRDB.swift/blob/master/Documentation/CustomSQLiteBuilds.md)。
+
 ## 参与贡献
 我们非常欢迎你为 JsonData 提交代码或提出宝贵建议！在提交代码前，请务必阅读我们的 [贡献指南 (CONTRIBUTING.md)](CONTRIBUTING.md)。
 

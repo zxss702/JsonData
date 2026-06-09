@@ -14,7 +14,7 @@ import Musl
 import ucrt
 #endif
 
-private final class WeakRef {
+internal final class WeakRef {
     weak var value: (any PersistentModel)?
 
     init(_ value: any PersistentModel) {
@@ -57,8 +57,8 @@ public final class ModelContext: @unchecked Sendable {
     /// 数据库文件所在的基础目录 URL。
     public let baseURL: URL
 
-    private let identityMapLock = Mutex(())
-    private var identityMap: [PersistentIdentifier: WeakRef] = [:]
+    internal let identityMapLock = Mutex(())
+    internal var identityMap: [PersistentIdentifier: WeakRef] = [:]
     
     internal var insertedModels: [PersistentIdentifier: any PersistentModel] = [:]
     internal var changedModels: [PersistentIdentifier: any PersistentModel] = [:]
@@ -77,7 +77,7 @@ public final class ModelContext: @unchecked Sendable {
     }
 
     // @contributor
-    private func _scheduleAutosave() {
+    internal func _scheduleAutosave() {
         guard autosaveEnabled else { return }
         pendingSaveLock.withLock { _ in
             pendingSaveTask?.cancel()
@@ -479,9 +479,6 @@ public final class ModelContext: @unchecked Sendable {
         _ descriptor: FetchDescriptor<T> = FetchDescriptor<T>(),
         limit: Int? = nil
     ) throws -> [T] {
-        if descriptor.includePendingChanges && (!insertedModels.isEmpty || !changedModels.isEmpty || !deletedModels.isEmpty) {
-            try? save()
-        }
         let effectiveLimit = descriptor.fetchLimit ?? limit
         if let effectiveLimit, effectiveLimit <= 0 {
             return []
@@ -535,6 +532,25 @@ public final class ModelContext: @unchecked Sendable {
             }
             
             results.append(model)
+        }
+
+        if descriptor.includePendingChanges {
+            identityMapLock.withLock { _ in
+                let pendingInserts = insertedModels.values.compactMap { $0 as? T }
+                if let filter = descriptor.predicate?.memoryFilter {
+                    results.removeAll { deletedModels[$0.persistentModelID] != nil || !filter($0) }
+                    for insert in pendingInserts {
+                        if filter(insert) && deletedModels[insert.persistentModelID] == nil {
+                            results.append(insert)
+                        }
+                    }
+                } else if descriptor.predicate == nil {
+                    results.removeAll { deletedModels[$0.persistentModelID] != nil }
+                    results.append(contentsOf: pendingInserts.filter { deletedModels[$0.persistentModelID] == nil })
+                } else {
+                    results.removeAll { deletedModels[$0.persistentModelID] != nil }
+                }
+            }
         }
 
         return results

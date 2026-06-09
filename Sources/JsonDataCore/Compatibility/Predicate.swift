@@ -6,10 +6,12 @@ import Foundation
 public struct Predicate<T: PersistentModel>: @unchecked Sendable {
     public let sql: String
     public let arguments: [Any]
+    public let memoryFilter: ((T) -> Bool)?
     
-    public init(sql: String, arguments: [Any]) {
+    public init(sql: String, arguments: [Any], memoryFilter: ((T) -> Bool)? = nil) {
         self.sql = sql
         self.arguments = arguments
+        self.memoryFilter = memoryFilter
     }
 }
 

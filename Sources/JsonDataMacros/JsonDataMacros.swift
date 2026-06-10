@@ -714,7 +714,8 @@ private struct PredicateClosureParser {
         } else if let infix = expr.as(InfixOperatorExprSyntax.self) {
             // 检测嵌套 keyPath：如 $0.subAgent?.callID == xxx
             if let components = collectKeyPathComponents(infix.leftOperand), components.count > 1 {
-                sql += "(1=1)"
+                sql += "("
+                sql += "1=1"
                 let op = infix.operator.trimmedDescription
                 // 映射到 SQL 运算符
                 let sqlOp: String

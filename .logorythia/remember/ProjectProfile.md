@@ -24,7 +24,8 @@ SwiftData (macOS 14+) → SwiftData 原生
 | `Sources/JsonData/Query.swift` | 查询相关类型 |
 | `Sources/JsonData/SchemaMetadata.swift` | Schema 元数据类型（`_JsonDataColumnKind`、`_JsonDataColumnInfo`、`_JsonDataSchemaProviding`），仅在非 SwiftData 分支生效 |
 | `Sources/JsonData/Compatibility/` | 兼容性处理目录 |
-| `Sources/JsonDataMacros/JsonDataMacros.swift` | 宏实现，生成 `persistentModelID`、`_modelContext` 等 |
+| `Sources/JsonDataMacros/JsonDataMacros.swift` | 宏实现，生成 `persistentModelID`、`_modelContext` 等；解析嵌套 keyPath 生成 `JoinCondition` |
+| `Sources/JsonDataCore/Compatibility/Predicate.swift` | `JoinCondition` 结构体，支持嵌套 keyPath 跨表 JOIN 子查询 |
 
 ### 当前存储机制（非 SwiftData 分支）
 
@@ -156,7 +157,7 @@ CREATE INDEX idx_type ON jsondata_records(type_name);
 | `insert(_:)` | 保留调用顺序：identity map → `_modelContext` → fault → `_save()` |
 | `delete(_:)` | `DELETE FROM jsondata_records WHERE type_name=? AND id=?` |
 | `model(for:)` | identity map 查询优先，再 `SELECT payload WHERE type_name=? AND id=?` |
-| `fetch(_:)` | 无 predicate：仅查 id 列构造 fault； 有 predicate：查 payload 后内存过滤 |
+| `fetch(_:)` | 无 predicate：仅查 id 列构造 fault； 有 predicate：嵌套 keyPath 走 JOIN 子查询，其余走 payload 内存过滤 |
 | `_faultIn(_:)` | `model(for:)` 截断，返回完整对象再 `_copy(from:)` |
 
 ### 关键设计决策
@@ -165,6 +166,7 @@ CREATE INDEX idx_type ON jsondata_records(type_name);
 2. **内存排序**：predicate decode 后内存求值；sort/offset/limit 先内存处理；使用 SortDescriptor.comparator 或 keyPath+order
 3. **@Transient 保留**：宏阶段排除，不受存储后端影响
 4. **Identity map key**：改为 `"\(typeName)::\(id)"` 复合 key
+5. **嵌套 keyPath 跨表 JOIN**：宏解析模型 keyPath（如 `$0.subAgent?.callID`）生成 `JoinCondition`，在 SQLite 层拼装 `LEFT JOIN` 子查询；实现跨模型属性筛选，避免全量 payload 内存遍历
 
 ### 实施阶段
 

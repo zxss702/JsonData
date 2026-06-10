@@ -533,22 +533,26 @@ public final class ModelContext: @unchecked Sendable {
         }
 
         if descriptor.includePendingChanges {
+            var pendingInserts: [T] = []
+            var deletedIDs: Set<PersistentIdentifier> = []
             identityMapLock.withLock { _ in
-                let pendingInserts = insertedModels.values.compactMap { $0 as? T }
-                if let filter = descriptor.predicate?.memoryFilter {
-                    results.removeAll { deletedModels[$0.persistentModelID] != nil || !filter($0) }
-                    for insert in pendingInserts {
-                        if filter(insert) && deletedModels[insert.persistentModelID] == nil {
-                            results.append(insert)
-                        }
+                pendingInserts = insertedModels.values.compactMap { $0 as? T }
+                deletedIDs = Set(deletedModels.keys)
+            }
+            
+            if let filter = descriptor.predicate?.memoryFilter {
+                results.removeAll { deletedIDs.contains($0.persistentModelID) || !filter($0) }
+                for insert in pendingInserts {
+                    if !deletedIDs.contains(insert.persistentModelID) && filter(insert) {
+                        results.append(insert)
                     }
-                } else if descriptor.predicate == nil {
-                    results.removeAll { deletedModels[$0.persistentModelID] != nil }
-                    results.append(contentsOf: pendingInserts.filter { deletedModels[$0.persistentModelID] == nil })
-                } else {
-                    results.removeAll { deletedModels[$0.persistentModelID] != nil }
-                    results.append(contentsOf: pendingInserts.filter { deletedModels[$0.persistentModelID] == nil })
                 }
+            } else if descriptor.predicate == nil {
+                results.removeAll { deletedIDs.contains($0.persistentModelID) }
+                results.append(contentsOf: pendingInserts.filter { !deletedIDs.contains($0.persistentModelID) })
+            } else {
+                results.removeAll { deletedIDs.contains($0.persistentModelID) }
+                results.append(contentsOf: pendingInserts.filter { !deletedIDs.contains($0.persistentModelID) })
             }
         }
 

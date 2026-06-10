@@ -17,7 +17,8 @@ SwiftData (macOS 14+) → SwiftData 原生
 
 | 文件 | 职责 |
 |------|------|
-| `Sources/JsonData/JsonData.swift` | 宏定义（`@Model`、`@Transient`）、协议（`PersistentModel`）、类型（`FetchDescriptor`、`Field`、`SortDescriptor`） |
+| `Sources/JsonData/JsonData.swift` | 宏定义（`@Model`、`@Transient`）、协议（`PersistentModel`）、类型（`FetchDescriptor`、`Field`） |
+| `Sources/JsonDataCore/JsonDataCore.swift` | 自定义 `SortDescriptor` 结构体、`_ArrayFieldProtocol` |
 | `Sources/JsonData/ModelContext.swift` | 核心存储操作：CRUD、fetch、faulting、identity map |
 | `Sources/JsonData/ModelContainer.swift` | 容器管理，关联 schema 和 context |
 | `Sources/JsonData/Query.swift` | 查询相关类型 |
@@ -32,8 +33,9 @@ SwiftData (macOS 14+) → SwiftData 原生
 - **变更通知**：`Notification.Name("JsonData.ModelContextDidChange")`
 
 ### 条件编译策略
-- macOS：走 SwiftData 原生路径（`canImport(SwiftData)`）
-- Linux/Windows：走 GRDB/SQLite 路径（`!canImport(SwiftData)`）
+- **JsonData（Public API 层）**：macOS 走 SwiftData 原生路径（`canImport(SwiftData)`），Linux/Windows 走 GRDB/SQLite 路径（`!canImport(SwiftData)`）
+  - macOS 上 JsonData 嫁接到 SwiftData，不经过 JsonDataCore
+- **JsonDataCore（内部 Runtime 层）**：**仅支持 Linux/Windows**，所有 Darwin/macOS 代码须移除
 - **禁止**：`JSONDATA_FORCE_CUSTOM_RUNTIME` 之类人为分叉
 
 ## 关键类型
@@ -43,6 +45,19 @@ SwiftData (macOS 14+) → SwiftData 原生
 - 必需属性：`persistentModelID: String`、`_modelContext: ModelContext?`、`_isFault`、`_isFaulting`
 - 必需方法：`access(keyPath:)`、`withMutation(keyPath:_:)`、`fault()`、`_copy(from:)`
 
+### `Field` 与 `_ArrayFieldProtocol`
+- `Field` 是属性包装器，用于标记模型中需要持久化的字段
+- `_ArrayFieldProtocol`（`JsonDataCore.swift`）：数组类型 Field 在 decode 遇到 nil 时返回空数组而非崩溃，对齐 SwiftData 行为
+- 设计原则：所有集合类型字段的 nil 安全性统一由 `_ArrayFieldProtocol` 处理，避免调用方重复判空
+- **行为契约**：Field setter 中，当赋值为 `PersistentModel`（或其数组）时，自动将该模型注册到当前 ModelContext，确保上下文一致性
+
+### 自定义 `SortDescriptor`（`JsonDataCore.swift`）
+- 自定义结构体替代 `Foundation.SortDescriptor` typealias，不依赖 Foundation 的排序类型
+- 属性：`keyPath: String`（模型属性名）、`order: SortOrder`（SortOrder.forward / .reverse）、`comparator: ((Any, Any) -> ComparisonResult)?`
+- **SQL ORDER BY**：直接使用 `keyPath` 转列名 + `order` 转 ASC/DESC，不再通过 Mirror 反射提取
+- **内存排序**：使用 `comparator` 或 `keyPath`+`order` 组合排序
+- 移除旧方案中的 `_jsonDataColumn` 辅助函数和 Mirror 反射代码
+
 ### `ModelContext` 核心方法
 - `insert(_:)`：注册到 identity map + 触发 `_save()`
 - `_save(_:)`：序列化模型为 JSON 写入文件
@@ -50,6 +65,7 @@ SwiftData (macOS 14+) → SwiftData 原生
 - `fetch(_:limit:)`：扫描目录、过滤、排序、反序列化
 - `model(for:)`：按 ID 读取单个模型
 - `_faultIn(_:)`：触发 fault 模型加载
+- **行为契约**：`fetch` 中 `includePendingChanges` 为 true 时，若有待定变更则先 save 再 fetch，确保查询包含最新未落盘数据
 
 ## 构建命令
 
@@ -98,7 +114,7 @@ swift build --target JsonData # 单目标构建
 - **目标**：更广的 predicate 支持、复杂类型策略、关系、迁移、并发与性能表现逐步接近 SwiftData
 - **高风险差异区**：
   - Predicate 编译覆盖率（SQL 下推 vs 内存遍历）
-  - SortDescriptor 的 SQL 化
+  - SortDescriptor 自定义结构体替代 Foundation typealias（keyPath/order 直接可读，不再需要 Mirror 反射）
   - 复杂字段类型（嵌套 Codable、数组、字典）的谓词支持
   - 保存时机（即时写库 vs 上下文感知的延后保存）
   - 并发与上下文隔离（多平台线程/锁模型验证）
@@ -146,7 +162,7 @@ CREATE INDEX idx_type ON jsondata_records(type_name);
 ### 关键设计决策
 
 1. **JSON payload 策略**：不拆字段列，复用宏生成的 `CodingKeys` 和 `Codable`
-2. **内存排序**：predicate decode 后内存求值；sort/offset/limit 先内存处理
+2. **内存排序**：predicate decode 后内存求值；sort/offset/limit 先内存处理；使用 SortDescriptor.comparator 或 keyPath+order
 3. **@Transient 保留**：宏阶段排除，不受存储后端影响
 4. **Identity map key**：改为 `"\(typeName)::\(id)"` 复合 key
 

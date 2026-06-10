@@ -4,9 +4,7 @@ import Synchronization
 
 import GRDB
 
-#if canImport(Darwin)
-import Darwin
-#elseif canImport(Glibc)
+#if canImport(Glibc)
 import Glibc
 #elseif canImport(Musl)
 import Musl

@@ -732,6 +732,23 @@ public final class ModelContext: @unchecked Sendable {
             }
         }
 
+        // 处理嵌套 keyPath 产生的 JOIN 子查询（如 $0.subAgent?.callID == xxx）
+        if let joinConditions = descriptor.predicate?.joinConditions, !joinConditions.isEmpty {
+            if let schemaType = type as? any _JsonDataSchemaProviding.Type {
+                for jc in joinConditions {
+                    if let rel = schemaType._jsonDataRelationships.first(where: { $0.propertyName == jc.localColumn }),
+                       let destSchema = rel.destinationType as? any _JsonDataSchemaProviding.Type {
+                        let targetTable = destSchema._jsonDataTableName
+                        let prefix = sql.contains("WHERE") ? " AND" : " WHERE"
+                        sql += "\(prefix) \(_quote(identifier: jc.localColumn)) IN (SELECT \"_id\" FROM \(_quote(identifier: targetTable)) WHERE \(_quote(identifier: jc.targetColumn)) \(jc.op) ?)"
+                        if let dbArg = _databaseArgument(for: jc.argument) {
+                            arguments += StatementArguments([dbArg])
+                        }
+                    }
+                }
+            }
+        }
+
         let orderBy = _buildOrderByClause(descriptor.sortBy, columns: _columns(for: type))
         if !orderBy.isEmpty {
             sql += " ORDER BY \(orderBy)"

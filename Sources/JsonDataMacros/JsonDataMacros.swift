@@ -613,9 +613,12 @@ public struct PredicateMacro: ExpressionMacro {
         var parser = PredicateClosureParser(closure: closure)
         let parsed = try parser.parse()
         
-        let argsString = parsed.1.map { "\($0)" }.joined(separator: ", ")
+        let argsString = parsed.arguments.map { "\($0)" }.joined(separator: ", ")
+        let joinConditionsCode = parsed.joinConditions.map { jc in
+            "JsonDataCore.JoinCondition(localColumn: \"\(jc.localColumn)\", targetColumn: \"\(jc.targetColumn)\", op: \"\(jc.op)\", argument: \(jc.argument))"
+        }.joined(separator: ", ")
         
-        return "JsonDataCore.Predicate(sql: \"\(raw: parsed.0)\", arguments: [\(raw: argsString)], memoryFilter: \(closure))"
+        return "JsonDataCore.Predicate(sql: \"\(raw: parsed.sql)\", arguments: [\(raw: argsString)], joinConditions: [\(raw: joinConditionsCode)], memoryFilter: \(closure))"
     }
 }
 
@@ -624,10 +627,11 @@ private struct PredicateClosureParser {
     let closure: ClosureExprSyntax
     var sql: String = ""
     var arguments: [String] = []
+    var joinConditions: [(localColumn: String, targetColumn: String, op: String, argument: String)] = []
     
     var closureParamName: String = "$0"
 
-    mutating func parse() throws -> (String, [String]) {
+    mutating func parse() throws -> (sql: String, arguments: [String], joinConditions: [(localColumn: String, targetColumn: String, op: String, argument: String)]) {
         if let signature = closure.signature {
             if let paramList = signature.parameterClause?.as(ClosureShorthandParameterListSyntax.self) {
                 closureParamName = paramList.first?.name.text ?? "$0"
@@ -644,7 +648,35 @@ private struct PredicateClosureParser {
         }
         
         try parseExpr(expr)
-        return (sql, arguments)
+        return (sql, arguments, joinConditions)
+    }
+
+    /// 收集嵌套 keyPath 的各级组件，如 $0.subAgent?.callID 返回 ["subAgent", "callID"]
+    /// 单级 keyPath（如 $0.callID）返回 ["callID"]
+    /// 非 keyPath 返回 nil
+    private func collectKeyPathComponents(_ expr: ExprSyntax) -> [String]? {
+        var components: [String] = []
+        var current: ExprSyntax = expr
+        
+        while true {
+            if let memberAccess = current.as(MemberAccessExprSyntax.self) {
+                components.insert(memberAccess.declName.baseName.text, at: 0)
+                if let base = memberAccess.base {
+                    if base.trimmedDescription == closureParamName {
+                        return components
+                    }
+                    current = base
+                } else {
+                    return nil
+                }
+            } else if let optChain = current.as(OptionalChainingExprSyntax.self) {
+                current = optChain.expression
+            } else if let forceUnwrap = current.as(ForceUnwrapExprSyntax.self) {
+                current = forceUnwrap.expression
+            } else {
+                return nil
+            }
+        }
     }
 
     private func getModelProperty(from expr: ExprSyntax) -> String? {
@@ -680,6 +712,25 @@ private struct PredicateClosureParser {
             try parseExpr(first.expression)
             sql += ")"
         } else if let infix = expr.as(InfixOperatorExprSyntax.self) {
+            // 检测嵌套 keyPath：如 $0.subAgent?.callID == xxx
+            if let components = collectKeyPathComponents(infix.leftOperand), components.count > 1 {
+                sql += "(1=1)"
+                let op = infix.operator.trimmedDescription
+                // 映射到 SQL 运算符
+                let sqlOp: String
+                switch op {
+                case "==": sqlOp = "="
+                case "!=": sqlOp = "!="
+                default: sqlOp = op
+                }
+                joinConditions.append((
+                    localColumn: components[0],
+                    targetColumn: components.last!,
+                    op: sqlOp,
+                    argument: infix.rightOperand.trimmedDescription
+                ))
+                sql += ")"
+            } else {
             sql += "("
             try parseExpr(infix.leftOperand)
             sql += " "
@@ -703,6 +754,7 @@ private struct PredicateClosureParser {
                 try parseExpr(infix.rightOperand)
             }
             sql += ")"
+            } // end of nested keyPath else
         } else if let propName = getModelProperty(from: expr) {
             sql += "\\\"\(propName)\\\""
         } else if let prefix = expr.as(PrefixOperatorExprSyntax.self) {

@@ -549,8 +549,23 @@ public final class ModelContext: @unchecked Sendable {
                     results.append(contentsOf: pendingInserts.filter { deletedModels[$0.persistentModelID] == nil })
                 } else {
                     results.removeAll { deletedModels[$0.persistentModelID] != nil }
+                    results.append(contentsOf: pendingInserts.filter { deletedModels[$0.persistentModelID] == nil })
                 }
             }
+        }
+
+        if !descriptor.sortBy.isEmpty {
+            let sortDescriptors = descriptor.sortBy
+            results.sort { a, b in
+                for sd in sortDescriptors {
+                    if sd.areInIncreasingOrder(a, b) { return true }
+                    if sd.areInIncreasingOrder(b, a) { return false }
+                }
+                return false
+            }
+        }
+        if let effectiveLimit {
+            results = Array(results.prefix(effectiveLimit))
         }
 
         return results
@@ -745,49 +760,18 @@ public final class ModelContext: @unchecked Sendable {
         ) -> String {
             let resolver = Self._keyPathResolver(for: T.self)
             let fragments = sortBy.compactMap { descriptor -> String? in
-                let mirror = Mirror(reflecting: descriptor)
                 guard
-                    let comparison = mirror.children.first(where: { $0.label == "comparison" })?.value,
-                    let comparable = Mirror(reflecting: comparison).children.first(where: { $0.label == "comparable" })?.value,
-                    let keyPath = Mirror(reflecting: comparable).children.first(where: { $0.label == ".1" })?.value,
-                    let column = _jsonDataColumn(for: keyPath, columns: columns, resolver: resolver)
+                    let propertyName = resolver?(descriptor.keyPath),
+                    let column = columns.first(where: { $0.propertyName == propertyName || $0.columnName == propertyName })
                 else {
                     return nil
                 }
-                let isReverse = String(describing: descriptor).contains("order: reverse") || String(describing: mirror.children.first(where: { $0.label == "order" })?.value ?? "").contains("reverse")
+                let isReverse = descriptor.order == .reverse
                 return "\(_quote(identifier: column.columnName)) \(isReverse ? "DESC" : "ASC")"
             }
             return fragments.joined(separator: ", ")
         }
 }
-
-private func _jsonDataColumn(
-    for keyPath: Any,
-    columns: [_JsonDataColumnInfo],
-    resolver: ((AnyKeyPath) -> String?)? = nil
-) -> _JsonDataColumnInfo? {
-    if let anyKeyPath = keyPath as? AnyKeyPath,
-       let propertyName = resolver?(anyKeyPath),
-       let match = columns.first(where: { $0.propertyName == propertyName || $0.columnName == propertyName }) {
-        return match
-    }
-
-    let description = String(describing: keyPath)
-    let normalized = description.replacingOccurrences(of: "\\", with: "")
-    let separators = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_"))
-    let tokens = normalized.components(separatedBy: separators.inverted).filter { !$0.isEmpty }
-
-    for token in tokens.reversed() {
-        if let match = columns.first(where: { $0.propertyName == token || $0.columnName == token }) {
-            return match
-        }
-    }
-
-    return columns.first {
-        normalized.contains($0.propertyName) || normalized.contains($0.columnName)
-    }
-}
-
 
 private func _databaseArgument(for value: Any?) -> DatabaseValueConvertible? {
     switch value {

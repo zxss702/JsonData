@@ -89,7 +89,28 @@ public extension PersistentModel {
     }
 }
 
-public typealias SortDescriptor<T: PersistentModel> = Foundation.SortDescriptor<T>
+/// 描述排序条件的描述符，持有 keyPath 和排序方向，可直接用于生成 SQL ORDER BY。
+public struct SortDescriptor<T: PersistentModel>: @unchecked Sendable {
+    public let keyPath: AnyKeyPath
+    public let order: SortOrder
+    private let _comparator: (T, T) -> Bool
+    
+    public init<Value: Comparable>(_ keyPath: KeyPath<T, Value>, order: SortOrder = .forward) {
+        self.keyPath = keyPath
+        self.order = order
+        self._comparator = { a, b in
+            if order == .forward {
+                return a[keyPath: keyPath] < b[keyPath: keyPath]
+            } else {
+                return a[keyPath: keyPath] > b[keyPath: keyPath]
+            }
+        }
+    }
+    
+    public func areInIncreasingOrder(_ a: T, _ b: T) -> Bool {
+        return _comparator(a, b)
+    }
+}
 
 /// 描述一次数据查询的配置，包括排序、过滤、分页及预取策略。
 public struct FetchDescriptor<T: PersistentModel>: @unchecked Sendable {

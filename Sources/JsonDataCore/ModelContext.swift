@@ -808,6 +808,7 @@ private func _databaseArgument(for value: Any?) -> DatabaseValueConvertible? {
     case let date as Date: return ISO8601DateFormatter().string(from: date)
     case let url as URL: return url.absoluteString
     case let data as Data: return data
+    case let pid as PersistentIdentifier: return pid.id
     case nil: return nil
     default:
         return nil

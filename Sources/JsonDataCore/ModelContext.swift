@@ -630,7 +630,7 @@ public final class ModelContext: @unchecked Sendable {
 
     /// 在主线程启动数据观察，当查询结果变化时回调 `onChange`。
     @MainActor
-    public func startObservation<T: PersistentModel & Sendable>(
+    public func startObservation<T: PersistentModel>(
         _ descriptor: FetchDescriptor<T> = FetchDescriptor<T>(),
         onError: @Sendable @escaping (Error) -> Void = { _ in },
         onChange: @MainActor @Sendable @escaping ([T]) -> Void

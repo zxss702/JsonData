@@ -735,11 +735,11 @@ public final class ModelContext: @unchecked Sendable {
         values["_id"] = row["_id"] as String
         for col in columns {
             switch col.kind {
-            case .string, .uuid, .date, .codableJSON, .url:
+            case .string, .uuid, .codableJSON, .url:
                 values[col.columnName] = row[col.columnName] as String?
             case .integer:
                 values[col.columnName] = row[col.columnName] as Int64?
-            case .double:
+            case .double, .date:
                 values[col.columnName] = row[col.columnName] as Double?
             case .bool:
                 values[col.columnName] = row[col.columnName] as Int64?

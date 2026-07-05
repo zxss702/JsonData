@@ -371,7 +371,7 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                 case "UUID":
                     return "values[\"\(name)\"] = (\(valExpr))?.uuidString"
                 case "Date":
-                    return "values[\"\(name)\"] = (\(valExpr)).map { let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f.string(from: $0) }"
+                    return "values[\"\(name)\"] = (\(valExpr)).map { $0.timeIntervalSinceReferenceDate }"
                 default:
                     return """
                     if let v = \(valExpr) {
@@ -461,12 +461,8 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                     """
                 case "Date":
                     code = """
-                    if let v = values["\(name)"] as? String, let date = {
-                        let f = ISO8601DateFormatter()
-                        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                        return f.date(from: v) ?? ISO8601DateFormatter().date(from: v)
-                    }() {
-                        self._\(name) = Field(wrappedValue: date)
+                    if let v = values["\(name)"] as? Double {
+                        self._\(name) = Field(wrappedValue: Date(timeIntervalSinceReferenceDate: v))
                     }\(fallback)
                     """
                 case "Data":

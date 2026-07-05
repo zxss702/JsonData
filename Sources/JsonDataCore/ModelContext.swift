@@ -242,10 +242,10 @@ public final class ModelContext: @unchecked Sendable {
     // @contributor
     private func _sqlType(for kind: _JsonDataColumnKind) -> String {
         switch kind {
-        case .string, .uuid, .date, .codableJSON, .url: return "TEXT"
+        case .string, .uuid, .codableJSON, .url: return "TEXT"
         case .integer, .bool:
             return "INTEGER"
-        case .double:
+        case .double, .date:
             return "REAL"
         case .data:
             return "BLOB"
@@ -255,11 +255,11 @@ public final class ModelContext: @unchecked Sendable {
     // @contributor
     private func _sqlDefault(for kind: _JsonDataColumnKind) -> String {
         switch kind {
-        case .string, .uuid, .date, .codableJSON, .url:
+        case .string, .uuid, .codableJSON, .url:
             return "''"
         case .integer, .bool:
             return "0"
-        case .double:
+        case .double, .date:
             return "0.0"
         case .data:
             return "x''"
@@ -828,7 +828,6 @@ public final class ModelContext: @unchecked Sendable {
             return fragments.joined(separator: ", ")
         }
 }
-
 private func _databaseArgument(for value: Any?) -> DatabaseValueConvertible? {
     switch value {
     case let int as Int: return int

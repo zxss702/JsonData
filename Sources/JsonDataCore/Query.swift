@@ -5,7 +5,7 @@ import GRDB
 
 @Observable
 /// 管理查询状态和数据库观察，自动响应数据变更并更新结果集。
-public final class QueryState<Element: PersistentModel & Sendable>: @unchecked Sendable {
+public final class QueryState<Element: PersistentModel>: @unchecked Sendable {
     public var items: [Element] = []
     private var descriptor: FetchDescriptor<Element>
     private var isAttached = false
@@ -40,7 +40,7 @@ public final class QueryState<Element: PersistentModel & Sendable>: @unchecked S
 @MainActor
 @propertyWrapper
 /// 属性包装器，根据过滤和排序条件从模型上下文中查询数据。
-public struct Query<Element: PersistentModel & Sendable> {
+public struct Query<Element: PersistentModel> {
     private var state: QueryState<Element>
     
     @MainActor

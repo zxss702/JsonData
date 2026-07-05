@@ -574,7 +574,7 @@ public final class ModelContext: @unchecked Sendable {
     }
 
     /// 创建数据观察器，用于监听查询结果的实时变化。
-    public func observe<T: PersistentModel & Sendable>(
+    public func observe<T: PersistentModel>(
         _ descriptor: FetchDescriptor<T> = FetchDescriptor<T>()
     ) -> ValueObservation<ValueReducers.Fetch<[T]>> {
         let tableName = _tableName(for: T.self)

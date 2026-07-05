@@ -809,7 +809,10 @@ private func _databaseArgument(for value: Any?) -> DatabaseValueConvertible? {
     case let string as String: return string
     case let bool as Bool: return bool ? 1 : 0
     case let uuid as UUID: return uuid.uuidString
-    case let date as Date: return ISO8601DateFormatter().string(from: date)
+    case let date as Date:
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
     case let url as URL: return url.absoluteString
     case let data as Data: return data
     case let pid as PersistentIdentifier: return pid.id

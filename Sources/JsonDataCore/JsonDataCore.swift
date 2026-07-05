@@ -7,6 +7,12 @@ import Foundation
 @attached(member, names: named(_observationRegistrar), named(modelContext), named(_modelContext), named(_isFault), named(_isFaulting), named(access), named(withMutation), named(didChange), named(fault), named(_copy), named(init), named(persistentModelID), named(_jsonDataTableName), named(_jsonDataColumns), named(_jsonDataRelationships), named(_jsonDataPropertyName), named(_isSyncingInverse), named(_jsonDataSetValue), named(_jsonDataIndexes), named(_jsonDataUniques), named(_toColumnValues), named(_populateFromColumnValues))
 public macro Model() = #externalMacro(module: "JsonDataMacros", type: "ModelMacro")
 
+@available(swift 5.9)
+@available(macOS 14, iOS 17, tvOS 17, watchOS 10, *)
+@attached(member, names: named(modelExecutor), named(modelContainer), named(init))
+@attached(extension, conformances: ModelActor)
+public macro ModelActor() = #externalMacro(module: "JsonDataMacros", type: "PersistentModelActorMacro")
+
 /// 标记某个属性为瞬态，不会持久化到数据库。
 @attached(peer)
 public macro Transient() = #externalMacro(module: "JsonDataMacros", type: "TransientMacro")

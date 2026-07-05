@@ -120,6 +120,7 @@ swift build --target JsonData # 单目标构建
   - 保存时机（即时写库 vs 上下文感知的延后保存）
   - 并发与上下文隔离（多平台线程/锁模型验证）
   - 关系与预取
+  - **`@ModelActor` 缺失**：JsonDataCore 未实现 `ModelActor` 协议、`ModelExecutor` / `SerialModelExecutor` 协议及 `@ModelActor` 宏。兼容层仅在 `canImport(SwiftData)` 时透传 Apple 原生 `@ModelActor`（需 macOS 14+ / iOS 17+），非 SwiftData 分支完全无可选。若需支持，需自行实现序列化执行器（基于 `ModelContext` 和 `DatabaseQueue`）。
 
 ### 跨平台验收标准
 - macOS 非 SwiftData 路径可编译、可测

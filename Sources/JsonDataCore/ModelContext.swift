@@ -632,8 +632,8 @@ public final class ModelContext: @unchecked Sendable {
     @MainActor
     public func startObservation<T: PersistentModel>(
         _ descriptor: FetchDescriptor<T> = FetchDescriptor<T>(),
-        onError: @Sendable @escaping (Error) -> Void = { _ in },
-        onChange: @MainActor @Sendable @escaping ([T]) -> Void
+        onError: @escaping (Error) -> Void = { _ in },
+        onChange: @MainActor @escaping ([T]) -> Void
     ) -> DatabaseCancellable {
         let obs = observe(descriptor)
         return obs.start(in: databaseQueue, onError: onError, onChange: onChange)

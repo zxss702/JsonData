@@ -576,7 +576,7 @@ public final class ModelContext: @unchecked Sendable {
     /// 创建数据观察器，用于监听查询结果的实时变化。
     public func observe<T: PersistentModel>(
         _ descriptor: FetchDescriptor<T> = FetchDescriptor<T>()
-    ) -> ValueObservation<ValueReducers.Fetch<[T]>> {
+    ) -> ValueObservation<ValueReducers.Fetch<UncheckedSendableArray<T>>> {
         let tableName = _tableName(for: T.self)
         try? _ensureTable(for: T.self)
         let effectiveLimit = descriptor.fetchLimit
@@ -623,10 +623,23 @@ public final class ModelContext: @unchecked Sendable {
                     return false
                 }
             }
-            return results
+            if let limit = effectiveLimit, results.count > limit {
+                results = Array(results.prefix(limit))
+            }
+            return UncheckedSendableArray(results)
         }
     }
 
+
+    public struct UncheckedSendableArray<V>: @unchecked Sendable {
+        public let value: [V]
+        public init(_ value: [V]) { self.value = value }
+    }
+
+    public struct UncheckedSendableClosure<C>: @unchecked Sendable {
+        public let closure: C
+        public init(_ closure: C) { self.closure = closure }
+    }
 
     /// 在主线程启动数据观察，当查询结果变化时回调 `onChange`。
     @MainActor
@@ -636,7 +649,18 @@ public final class ModelContext: @unchecked Sendable {
         onChange: @MainActor @escaping ([T]) -> Void
     ) -> DatabaseCancellable {
         let obs = observe(descriptor)
-        return obs.start(in: databaseQueue, onError: onError, onChange: onChange)
+        let boxedOnChange = UncheckedSendableClosure(onChange)
+        let boxedOnError = UncheckedSendableClosure(onError)
+        
+        return obs.start(
+            in: databaseQueue,
+            onError: { err in boxedOnError.closure(err) },
+            onChange: { box in
+                Task { @MainActor in
+                    boxedOnChange.closure(box.value)
+                }
+            }
+        )
     }
 
     /// 通过持久化标识符查找并返回模型实例。

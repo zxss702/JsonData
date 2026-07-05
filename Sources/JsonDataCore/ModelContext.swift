@@ -586,7 +586,7 @@ public final class ModelContext: @unchecked Sendable {
             let rows = try Row.fetchAll(db, sql: query.sql, arguments: query.arguments)
             let cols = self._columns(for: T.self)
             
-            let results = self.identityMapLock.withLock { _ -> [T] in
+            var results = self.identityMapLock.withLock { _ -> [T] in
                 var results = [T]()
                 for row in rows {
                     let idStr: String = row["_id"]
@@ -609,6 +609,19 @@ public final class ModelContext: @unchecked Sendable {
                     results.append(model)
                 }
                 return results
+            }
+            // Apply in-memory sort to match fetch behavior,
+            // since cached objects may have been mutated in memory
+            // and SQL ORDER BY reflects stale DB values.
+            if !descriptor.sortBy.isEmpty {
+                let sortDescriptors = descriptor.sortBy
+                results.sort { a, b in
+                    for sd in sortDescriptors {
+                        if sd.areInIncreasingOrder(a, b) { return true }
+                        if sd.areInIncreasingOrder(b, a) { return false }
+                    }
+                    return false
+                }
             }
             return results
         }

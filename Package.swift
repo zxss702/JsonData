@@ -13,9 +13,23 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/swiftlang/swift-syntax.git", "601.0.0"..<"604.0.0"),
-        .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.10.0"),
     ],
     targets: [
+        .target(
+            name: "GRDBSQLite",
+            cSettings: [
+                .define("SQLITE_ENABLE_FTS5"),
+                .define("SQLITE_ENABLE_SNAPSHOT")
+            ]
+        ),
+        .target(
+            name: "GRDB",
+            dependencies: ["GRDBSQLite"],
+            swiftSettings: [
+                .define("SQLITE_ENABLE_FTS5"),
+                .define("SQLITE_ENABLE_SNAPSHOT")
+            ]
+        ),
         .macro(
             name: "JsonDataMacros",
             dependencies: [
@@ -27,7 +41,7 @@ let package = Package(
             name: "JsonDataCore",
             dependencies: [
                 "JsonDataMacros",
-                .product(name: "GRDB", package: "GRDB.swift"),
+                "GRDB",
             ]
         ),
         .target(

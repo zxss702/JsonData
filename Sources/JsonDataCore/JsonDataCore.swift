@@ -112,6 +112,30 @@ public struct SortDescriptor<T: PersistentModel>: @unchecked Sendable {
             }
         }
     }
+
+    public init<Value: Comparable>(_ keyPath: KeyPath<T, Value?>, order: SortOrder = .forward) {
+        self.keyPath = keyPath
+        self.order = order
+        self._comparator = { a, b in
+            let lhs = a[keyPath: keyPath]
+            let rhs = b[keyPath: keyPath]
+            if order == .forward {
+                switch (lhs, rhs) {
+                case (nil, nil): return false
+                case (nil, _): return true
+                case (_, nil): return false
+                case let (l?, r?): return l < r
+                }
+            } else {
+                switch (lhs, rhs) {
+                case (nil, nil): return false
+                case (nil, _): return false
+                case (_, nil): return true
+                case let (l?, r?): return l > r
+                }
+            }
+        }
+    }
     
     public func areInIncreasingOrder(_ a: T, _ b: T) -> Bool {
         return _comparator(a, b)

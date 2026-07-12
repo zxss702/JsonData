@@ -10,6 +10,7 @@ let package = Package(
     ],
     products: [
         .library(name: "JsonData", targets: ["JsonData"]),
+        .library(name: "JsonData_Query", targets: ["JsonData_Query"]),
     ],
     dependencies: [
         .package(url: "https://github.com/swiftlang/swift-syntax.git", "601.0.0"..<"604.0.0"),
@@ -50,11 +51,18 @@ let package = Package(
                 "JsonDataCore",
             ]
         ),
+        .target(
+            name: "JsonData_Query",
+            dependencies: [
+                "JsonDataCore",
+            ]
+        ),
         .testTarget(
             name: "JsonDataTests",
             dependencies: [
                 "JsonDataCore",
                 "JsonData",
+                "JsonData_Query",
             ]
         )
     ]

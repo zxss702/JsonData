@@ -10,8 +10,8 @@
 
 ## 核心特性
 
-- **默认回退SwiftData**: 在 macOS、iOS 上，`import JsonData` 等价于 `import SwiftData`，在其他平台是自动切换为 GDRB 实现的 JsonData。
-- **SwiftData API 对齐**：`@Model`、`@Query`、`ModelContext` 与 `ModelContainer` 与 SwiftData 一致。
+- **默认回退SwiftData**: 在 macOS、iOS 上，`import JsonData` 等价于 `import SwiftData`，在其他平台是自动切换为 GRDB 实现的 JsonData。
+- **SwiftData API 对齐**：`@Model`、`ModelContext` 与 `ModelContainer` 与 SwiftData 一致；View 用的 `@Query` 由 UI 层提供（SwiftUI / SwiftTUI），显式 `context:` 版在独立产品 `JsonData_Query` 中。
 - **GRDB**：底层使用 SQLite ，这基本与 SwiftData 后端一致。
 
 ## 安装 (Swift Package Manager)
@@ -24,13 +24,16 @@ dependencies: [
 ]
 ```
 
-将 `JsonData` 添加到对应 Target 的依赖中：
+将所需产品添加到对应 Target 的依赖中：
 
 ```swift
 targets: [
     .target(
         name: "YourApp",
-        dependencies: ["JsonData"] // 若想在 Apple 平台中使用 GRDB 驱动的 JsonDataCore，请在此替换。
+        dependencies: [
+            "JsonData", // Apple 上为 SwiftData；其他平台为 JsonDataCore。若想在 Apple 上强制 GRDB，请改依赖 JsonDataCore。
+            // "JsonData_Query", // 仅当需要显式 context 版 @Query（非 SwiftUI/SwiftTUI）时再加
+        ]
     )
 ]
 ```
@@ -88,8 +91,18 @@ let descriptor = FetchDescriptor<TodoItem>(
 let pendingTodos = try context.fetch(descriptor)
 ```
 
-### 4. 响应式 UI (SwiftUI / SkipUI)
-如果你在编写界面，利用原生的 `@Query` 语法享受数据响应式刷新的黑魔法：
+### 4. 响应式查询（分层，对齐 SwiftData / SwiftUI）
+
+持久化核心（`JsonData` / `JsonDataCore`）**不**自带 View 用的 `@Query`，与 Apple 的分层一致：`@Query` 出现在 UI 集成层。
+
+| 场景 | Import | `@Query` |
+|------|--------|----------|
+| 只做持久化 | `import JsonData` | 无 |
+| SwiftUI（Apple） | `import SwiftUI` + `import JsonData` | 系统 `_SwiftData_SwiftUI` 的环境注入版 |
+| SwiftTUI | `import SwiftTUI` | SwiftTUI 的环境注入版（已 re-export JsonData） |
+| 无 UI / 显式 context | `import JsonData` + `import JsonData_Query` | `init(filter:sort:context:)` |
+
+**SwiftUI 示例：**
 
 ```swift
 import SwiftUI
@@ -98,8 +111,7 @@ import JsonData
 struct TodoListView: View {
     @Environment(\.modelContext) private var context
     
-    // 数据一旦改变，列表将自动刷新
-    @Query(sort: [SortDescriptor(\.createdAt)]) 
+    @Query(sort: [SortDescriptor(\.createdAt)])
     var todos: [TodoItem]
     
     var body: some View {
@@ -110,11 +122,30 @@ struct TodoListView: View {
 }
 ```
 
-> **注意：** 在非 SwiftUI 或 Skip.io 环境（如服务端业务流）中使用时，需要手动在初始化时向 `@Query` 传入参数：`@Query(context: ModelContext.shared)`。
+**非 UI（显式传入 context）需要额外依赖 `JsonData_Query`：**
+
+```swift
+// Package.swift
+dependencies: [
+    .product(name: "JsonData", package: "JsonData"),
+    .product(name: "JsonData_Query", package: "JsonData"),
+]
+
+// 源码
+import JsonData
+import JsonData_Query
+
+struct Worker {
+    @Query(sort: [SortDescriptor(\.createdAt)], context: ModelContext.shared)
+    var todos: [TodoItem]
+}
+```
+
+不要在同一文件同时使用 `JsonData_Query` 与 SwiftTUI/SwiftUI 的 `@Query`，否则会模块撞名。
 
 ### Windows 构建要求
 
-JsonDataCore 在 Linux / Windows 上通过 GRDB 的 `ValueObservation` 实现 `@Query` 的响应式更新。GRDB 在 Windows 上默认启用 `SQLITE_ENABLE_SNAPSHOT`，因此消费方必须自行编译并链接带 snapshot 支持的 SQLite，而不能使用未启用该选项的预编译库。
+JsonDataCore 在 Linux / Windows 上通过 GRDB 的 `ValueObservation` 实现查询的响应式更新（`QueryState` / `JsonData_Query`）。GRDB 在 Windows 上默认启用 `SQLITE_ENABLE_SNAPSHOT`，因此消费方必须自行编译并链接带 snapshot 支持的 SQLite，而不能使用未启用该选项的预编译库。
 
 编译 SQLite amalgamation 时需启用以下选项（与 GRDB 默认一致）：
 

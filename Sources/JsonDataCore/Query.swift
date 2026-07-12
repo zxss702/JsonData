@@ -36,20 +36,3 @@ public final class QueryState<Element: PersistentModel>: @unchecked Sendable {
         )
     }
 }
-
-@MainActor
-@propertyWrapper
-/// 属性包装器，根据过滤和排序条件从模型上下文中查询数据。
-public struct Query<Element: PersistentModel> {
-    private var state: QueryState<Element>
-    
-    @MainActor
-    public init(filter: Predicate<Element>? = nil, sort: [SortDescriptor<Element>] = [], context: ModelContext) {
-        let descriptor = FetchDescriptor(predicate: filter, sortBy: sort)
-        self.state = QueryState(descriptor: descriptor, context: context)
-    }
-    
-    public var wrappedValue: [Element] {
-        return state.items
-    }
-}

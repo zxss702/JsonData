@@ -630,6 +630,81 @@ public final class ModelContext: @unchecked Sendable {
         }
     }
 
+    /// 仅查询匹配描述符的持久化标识符，不 hydrate 模型行。
+    public func fetchPersistentIdentifiers<T: PersistentModel>(
+        _ descriptor: FetchDescriptor<T> = FetchDescriptor<T>()
+    ) throws -> [PersistentIdentifier] {
+        let effectiveLimit = descriptor.fetchLimit
+        if let effectiveLimit, effectiveLimit <= 0 {
+            return []
+        }
+
+        try _ensureTable(for: T.self)
+        let tableName = _tableName(for: T.self)
+        let query = try _buildIdentifierFetchQuery(
+            for: T.self,
+            descriptor: descriptor,
+            limit: effectiveLimit,
+            tableName: tableName
+        )
+        let idStrings: [String] = try databaseQueue.read { db in
+            try String.fetchAll(db, sql: query.sql, arguments: query.arguments)
+        }
+        return idStrings.map { PersistentIdentifier(id: $0) }
+    }
+
+    /// 观察谓词结果集的成员（仅 `_id`），供 `@Query` 懒惰判定增删。
+    public func observePersistentIdentifiers<T: PersistentModel>(
+        _ descriptor: FetchDescriptor<T> = FetchDescriptor<T>()
+    ) -> ValueObservation<ValueReducers.Fetch<UncheckedSendableArray<PersistentIdentifier>>> {
+        let tableName = _tableName(for: T.self)
+        try? _ensureTable(for: T.self)
+        let effectiveLimit = descriptor.fetchLimit
+
+        return ValueObservation.tracking { db in
+            let query = try self._buildIdentifierFetchQuery(
+                for: T.self,
+                descriptor: descriptor,
+                limit: effectiveLimit,
+                tableName: tableName
+            )
+            let idStrings = try String.fetchAll(db, sql: query.sql, arguments: query.arguments)
+            let ids = idStrings.map { PersistentIdentifier(id: $0) }
+            return UncheckedSendableArray(ids)
+        }
+    }
+
+    /// 在主线程启动成员集观察；ID 序列变化时回调（不交付完整模型）。
+    @MainActor
+    public func startMembershipObservation<T: PersistentModel>(
+        _ descriptor: FetchDescriptor<T> = FetchDescriptor<T>(),
+        onError: @escaping (Error) -> Void = { _ in },
+        onChange: @MainActor @escaping ([PersistentIdentifier]) -> Void
+    ) -> DatabaseCancellable {
+        let obs = observePersistentIdentifiers(descriptor)
+        let boxedOnChange = UncheckedSendableClosure(onChange)
+        let boxedOnError = UncheckedSendableClosure(onError)
+
+        return obs.start(
+            in: databaseQueue,
+            onError: { err in boxedOnError.closure(err) },
+            onChange: { box in
+                Task { @MainActor in
+                    boxedOnChange.closure(box.value)
+                }
+            }
+        )
+    }
+
+    /// 从数据库重新填充已缓存模型的字段，触发 `@Observable` 属性变更。
+    public func refreshCachedModels(ids: [PersistentIdentifier]) {
+        for id in ids {
+            guard let ref = identityMapLock.withLock({ _ in identityMap[id] }),
+                  let model = ref.value
+            else { continue }
+            _faultIn(model)
+        }
+    }
 
     public struct UncheckedSendableArray<V>: @unchecked Sendable {
         public let value: [V]
@@ -713,9 +788,14 @@ public final class ModelContext: @unchecked Sendable {
     }
 
     /// 将惰性加载的模型实例填充完整数据。此方法供内部使用。
-    public func _faultIn<T: PersistentModel>(_ model: T) {
+    public func _faultIn(_ model: any PersistentModel) {
         do {
-            guard let fullModel: T = try _loadModel(for: model.persistentModelID) else { return }
+            // Load a fresh typed shell via dynamic type, then copy onto the cached instance.
+            let id = model.persistentModelID
+            let type = type(of: model)
+            guard let fullModel = try _loadModelExistential(type: type, id: id) else { return }
+            model._isFaulting = true
+            defer { model._isFaulting = false }
             model._copy(from: fullModel)
             model._modelContext = self
             model._isFault = false
@@ -725,6 +805,35 @@ public final class ModelContext: @unchecked Sendable {
         } catch {
             return
         }
+    }
+
+    private func _loadModelExistential(
+        type: any PersistentModel.Type,
+        id: PersistentIdentifier
+    ) throws -> (any PersistentModel)? {
+        try _ensureTable(for: type)
+        let tableName = _tableName(for: type)
+        let cols = _columns(for: type)
+        let selectCols = (["_id"] + cols.map { _quote(identifier: $0.columnName) }).joined(separator: ", ")
+
+        let row: Row? = try databaseQueue.read { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT \(selectCols) FROM \(_quote(identifier: tableName)) WHERE _id = ?",
+                arguments: [id.id]
+            )
+        }
+        guard let row else { return nil }
+
+        let model = type.init()
+        model.persistentModelID = id
+        let values = _rowToValues(row, columns: cols)
+        if let schemaModel = model as? any _JsonDataSchemaProviding {
+            schemaModel._populateFromColumnValues(values, context: self)
+        }
+        model._modelContext = self
+        model._isFault = false
+        return model
     }
 
     // MARK: - Row ↔ Values Helpers
@@ -762,6 +871,39 @@ public final class ModelContext: @unchecked Sendable {
     ) throws -> (sql: String, arguments: StatementArguments) {
         let cols = _columns(for: type)
         let selectCols = (["_id"] + cols.map { _quote(identifier: $0.columnName) }).joined(separator: ", ")
+        return try _buildFetchQuerySQL(
+            for: type,
+            descriptor: descriptor,
+            limit: limit,
+            tableName: tableName,
+            selectCols: selectCols
+        )
+    }
+
+    // @contributor
+    private func _buildIdentifierFetchQuery<T: PersistentModel>(
+        for type: T.Type,
+        descriptor: FetchDescriptor<T>,
+        limit: Int?,
+        tableName: String
+    ) throws -> (sql: String, arguments: StatementArguments) {
+        try _buildFetchQuerySQL(
+            for: type,
+            descriptor: descriptor,
+            limit: limit,
+            tableName: tableName,
+            selectCols: "_id"
+        )
+    }
+
+    // @contributor
+    private func _buildFetchQuerySQL<T: PersistentModel>(
+        for type: T.Type,
+        descriptor: FetchDescriptor<T>,
+        limit: Int?,
+        tableName: String,
+        selectCols: String
+    ) throws -> (sql: String, arguments: StatementArguments) {
         var sql = "SELECT \(selectCols) FROM \(_quote(identifier: tableName))"
         var arguments = StatementArguments()
 

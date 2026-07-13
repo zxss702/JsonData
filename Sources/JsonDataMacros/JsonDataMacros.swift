@@ -207,7 +207,8 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
             var assignments = ""
             let variables = persistentStoredProperties(in: declaration)
             for variable in variables {
-                assignments += "self._\(variable.name) = other._\(variable.name)\n"
+                // Use property setters so ObservationRegistrar.withMutation fires for UI.
+                assignments += "self.\(variable.name) = other.\(variable.name)\n"
             }
 
             let typeName = declaration.as(ClassDeclSyntax.self)?.name.text ?? "Self"

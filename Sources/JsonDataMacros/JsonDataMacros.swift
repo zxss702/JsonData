@@ -395,7 +395,31 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
             // ── Generate _populateFromColumnValues ──
             let populateLines = persistentVariables.map { variable -> String in
                 let name = variable.name
-                let fallback = variable.isOptional ? " else { self._\(name) = Field(wrappedValue: nil) }" : ""
+                let fallback: String
+                if variable.isOptional {
+                    fallback = " else { self._\(name) = Field(wrappedValue: nil) }"
+                } else {
+                    switch variable.baseType {
+                    case "String":
+                        fallback = " else { self._\(name) = Field(wrappedValue: \"\") }"
+                    case "Int", "Int8", "Int16", "Int32", "Int64", "UInt", "UInt8", "UInt16", "UInt32", "UInt64":
+                        fallback = " else { self._\(name) = Field(wrappedValue: 0) }"
+                    case "Double", "Float":
+                        fallback = " else { self._\(name) = Field(wrappedValue: 0) }"
+                    case "Bool":
+                        fallback = " else { self._\(name) = Field(wrappedValue: false) }"
+                    case "UUID":
+                        fallback = " else { self._\(name) = Field(wrappedValue: UUID(uuidString: \"00000000-0000-0000-0000-000000000000\")!) }"
+                    case "Date":
+                        fallback = " else { self._\(name) = Field(wrappedValue: Date(timeIntervalSinceReferenceDate: 0)) }"
+                    case "Data":
+                        fallback = " else { self._\(name) = Field(wrappedValue: Data()) }"
+                    case "URL":
+                        fallback = " else { self._\(name) = Field(wrappedValue: URL(fileURLWithPath: \"/\")) }"
+                    default:
+                        fallback = ""
+                    }
+                }
                 
                 let code: String
                 if variable.attributeOptions.contains(where: { $0.contains(".externalStorage") }) {
@@ -429,6 +453,8 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                 case "String":
                     code = """
                     if let v = values["\(name)"] as? String {
+                        self._\(name) = Field(wrappedValue: v)
+                    } else if let d = values["\(name)"] as? Data, let v = String(data: d, encoding: .utf8) {
                         self._\(name) = Field(wrappedValue: v)
                     }\(fallback)
                     """
@@ -518,10 +544,8 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                 """,
                 """
                 public func fault() {
-                    if _isFault {
-                        _isFault = false
-                        _isFaulting = true
-                        defer { _isFaulting = false }
+                    // Skip while already faulting so property setters during _copy do not re-enter.
+                    if _isFault && !_isFaulting {
                         _modelContext?._faultIn(self)
                     }
                 }

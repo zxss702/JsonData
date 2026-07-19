@@ -179,6 +179,65 @@ extension Array: _ArrayFieldProtocol {
     public static var _emptyArray: Any { Self() as Any }
 }
 
+/// Scalar Field types that can fall back to a zero / empty value instead of crashing.
+public protocol _DefaultFieldProtocol {
+    static var _defaultFieldValue: Any { get }
+}
+extension String: _DefaultFieldProtocol {
+    public static var _defaultFieldValue: Any { "" }
+}
+extension Bool: _DefaultFieldProtocol {
+    public static var _defaultFieldValue: Any { false }
+}
+extension Int: _DefaultFieldProtocol {
+    public static var _defaultFieldValue: Any { 0 }
+}
+extension Int8: _DefaultFieldProtocol {
+    public static var _defaultFieldValue: Any { Int8(0) }
+}
+extension Int16: _DefaultFieldProtocol {
+    public static var _defaultFieldValue: Any { Int16(0) }
+}
+extension Int32: _DefaultFieldProtocol {
+    public static var _defaultFieldValue: Any { Int32(0) }
+}
+extension Int64: _DefaultFieldProtocol {
+    public static var _defaultFieldValue: Any { Int64(0) }
+}
+extension UInt: _DefaultFieldProtocol {
+    public static var _defaultFieldValue: Any { UInt(0) }
+}
+extension UInt8: _DefaultFieldProtocol {
+    public static var _defaultFieldValue: Any { UInt8(0) }
+}
+extension UInt16: _DefaultFieldProtocol {
+    public static var _defaultFieldValue: Any { UInt16(0) }
+}
+extension UInt32: _DefaultFieldProtocol {
+    public static var _defaultFieldValue: Any { UInt32(0) }
+}
+extension UInt64: _DefaultFieldProtocol {
+    public static var _defaultFieldValue: Any { UInt64(0) }
+}
+extension Double: _DefaultFieldProtocol {
+    public static var _defaultFieldValue: Any { 0.0 }
+}
+extension Float: _DefaultFieldProtocol {
+    public static var _defaultFieldValue: Any { Float(0) }
+}
+extension UUID: _DefaultFieldProtocol {
+    public static var _defaultFieldValue: Any { UUID(uuidString: "00000000-0000-0000-0000-000000000000")! }
+}
+extension Date: _DefaultFieldProtocol {
+    public static var _defaultFieldValue: Any { Date(timeIntervalSinceReferenceDate: 0) }
+}
+extension Data: _DefaultFieldProtocol {
+    public static var _defaultFieldValue: Any { Data() }
+}
+extension URL: _DefaultFieldProtocol {
+    public static var _defaultFieldValue: Any { URL(fileURLWithPath: "/") }
+}
+
 /// 用于 ``PersistentModel`` 的属性包装器，提供惰性加载与变更追踪能力，支持可选值、默认值及逆关系同步。
 @propertyWrapper
 public struct Field<Value> {
@@ -215,6 +274,10 @@ public struct Field<Value> {
             // 对齐 SwiftData：数组类型未建立关系或为 NULL 时返回空数组
             if let arrayType = Value.self as? any _ArrayFieldProtocol.Type {
                 return arrayType._emptyArray as! Value
+            }
+            // 非可选标量：fault-in 失败或列值缺失时回退零值，避免 Windows 上 fatalError
+            if let defType = Value.self as? any _DefaultFieldProtocol.Type {
+                return defType._defaultFieldValue as! Value
             }
             fatalError("Field<\(Value.self)> has no value and no default")
         }
@@ -329,11 +392,23 @@ public func _jsonDataEncode<T: Codable>(_ value: [T]) throws -> String? {
 }
 
 /// 将 JSON 字符串解码为 ``PersistentModel`` 的 Fault 空壳对象，惰性加载真实数据。
+/// Reuses the identity map when a live or existing fault instance is already registered.
 public func _jsonDataDecode<T: PersistentModel>(_ type: T.Type, from string: String, context: ModelContext?) throws -> T? {
+    let id = PersistentIdentifier(id: string)
+    if let context {
+        if let existing: T = context._registeredModel(for: id) {
+            return existing
+        }
+        let obj = T()
+        obj.persistentModelID = id
+        obj._isFault = true
+        obj._modelContext = context
+        context._registerInIdentityMap(obj)
+        return obj
+    }
     let obj = T()
-    obj.persistentModelID = PersistentIdentifier(id: string)
+    obj.persistentModelID = id
     obj._isFault = true
-    obj._modelContext = context
     return obj
 }
 
@@ -348,12 +423,17 @@ public func _jsonDataDecode<T: Codable>(_ type: T.Type, from string: String, con
 public func _jsonDataDecode<T: PersistentModel>(_ type: [T].Type, from string: String, context: ModelContext?) throws -> [T]? {
     guard let data = string.data(using: .utf8) else { return nil }
     let ids = try JSONDecoder().decode([String].self, from: data)
-    return ids.compactMap { id in
+    return ids.compactMap { idString in
         guard let ctx = context else { return nil }
+        let id = PersistentIdentifier(id: idString)
+        if let existing: T = ctx._registeredModel(for: id) {
+            return existing
+        }
         let obj = T()
-        obj.persistentModelID = PersistentIdentifier(id: id)
+        obj.persistentModelID = id
         obj._isFault = true
         obj._modelContext = ctx
+        ctx._registerInIdentityMap(obj)
         return obj
     }
 }

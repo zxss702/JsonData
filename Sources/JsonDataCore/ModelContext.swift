@@ -366,11 +366,25 @@ public final class ModelContext: @unchecked Sendable {
     /// 将模型插入上下文，在下一次保存时写入数据库。
     public func insert<T: PersistentModel>(_ model: T) {
         let shouldReturn = identityMapLock.withLock { _ -> Bool in
-            if insertedModels[model.persistentModelID] != nil || identityMap[model.persistentModelID] != nil {
+            let id = model.persistentModelID
+            if insertedModels[id] != nil {
                 return true
             }
-            identityMap[model.persistentModelID] = WeakRef(model)
-            insertedModels[model.persistentModelID] = model
+            if let ref = identityMap[id], let existing = ref.value {
+                if existing === model {
+                    insertedModels[id] = model
+                    return false
+                }
+                // Upgrade a relationship fault shell to the live inserted instance.
+                if existing._isFault {
+                    identityMap[id] = WeakRef(model)
+                    insertedModels[id] = model
+                    return false
+                }
+                return true
+            }
+            identityMap[id] = WeakRef(model)
+            insertedModels[id] = model
             return false
         }
         if shouldReturn { return }
@@ -826,18 +840,54 @@ public final class ModelContext: @unchecked Sendable {
         return model
     }
 
+    /// Returns a registered instance for `id` if present (fault or live).
+    internal func _registeredModel<T: PersistentModel>(for id: PersistentIdentifier) -> T? {
+        identityMapLock.withLock { _ in
+            identityMap[id]?.value as? T
+        }
+    }
+
+    /// Registers `model` in the identity map (does not insert / mark dirty).
+    internal func _registerInIdentityMap(_ model: any PersistentModel) {
+        identityMapLock.withLock { _ in
+            identityMap[model.persistentModelID] = WeakRef(model)
+        }
+    }
+
     /// 将惰性加载的模型实例填充完整数据。此方法供内部使用。
+    /// Only clears `_isFault` after a successful hydrate; load miss / error keeps the fault flag.
     public func _faultIn(_ model: any PersistentModel) {
         do {
-            // Load a fresh typed shell via dynamic type, then copy onto the cached instance.
             let id = model.persistentModelID
             let type = type(of: model)
-            guard let fullModel = try _loadModelExistential(type: type, id: id) else { return }
+
+            // Prefer a live non-fault instance already in the identity map (same id, different object).
+            // Inserted (unsaved) models are also registered in identityMap with _isFault == false.
+            // Assign inside the lock (don't return existential) to satisfy Swift 6 sending checks.
+            nonisolated(unsafe) var liveSource: (any PersistentModel)?
+            identityMapLock.withLock { _ in
+                guard let ref = identityMap[id], let cached = ref.value else { return }
+                if cached !== model, !cached._isFault, !cached._isFaulting {
+                    liveSource = cached
+                }
+            }
+
+            let fullModel: any PersistentModel
+            if let liveSource {
+                fullModel = liveSource
+            } else if let loaded = try _loadModelExistential(type: type, id: id) {
+                fullModel = loaded
+            } else {
+                // Keep _isFault == true so callers can retry; do not expose empty Fields as hydrated.
+                return
+            }
+
             model._isFaulting = true
             defer { model._isFaulting = false }
+            // Clear fault flag before _copy so Field setters' fault() calls are no-ops.
+            model._isFault = false
             model._copy(from: fullModel)
             model._modelContext = self
-            model._isFault = false
             identityMapLock.withLock { _ in
                 identityMap[model.persistentModelID] = WeakRef(model)
             }

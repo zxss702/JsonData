@@ -61,6 +61,8 @@ public final class ModelContext: @unchecked Sendable {
     internal var insertedModels: [PersistentIdentifier: any PersistentModel] = [:]
     internal var changedModels: [PersistentIdentifier: any PersistentModel] = [:]
     internal var deletedModels: [PersistentIdentifier: any PersistentModel] = [:]
+    /// `_bootstrapSchema` 注册的模型类型，供非泛型 `model(for:)` 扫描加载。
+    internal var schemaTypes: [any PersistentModel.Type] = []
     
     /// 是否启用自动保存。默认为 `true`。
     public var autosaveEnabled: Bool = true
@@ -171,6 +173,7 @@ public final class ModelContext: @unchecked Sendable {
     
     /// 根据给定的模型类型列表初始化数据库表结构。此方法供内部使用。
     public func _bootstrapSchema(_ schema: [any PersistentModel.Type]) {
+        schemaTypes = schema
         try? databaseQueue.write { db in
             for modelType in schema {
                 try? self._ensureTable(for: modelType, in: db)
@@ -738,7 +741,43 @@ public final class ModelContext: @unchecked Sendable {
         )
     }
 
-    /// 通过持久化标识符查找并返回模型实例。
+    /// 通过持久化标识符查找并返回模型实例（对齐 SwiftData 非泛型 API，便于 `as? ConcreteType`）。
+    public func model(for id: PersistentIdentifier) -> any PersistentModel {
+        if let cached = identityMapLock.withLock({ _ -> (any PersistentModel)? in
+            if let inserted = insertedModels[id] { return inserted }
+            if let ref = identityMap[id], let cached = ref.value { return cached }
+            return nil
+        }) {
+            return cached
+        }
+
+        for type in schemaTypes {
+            if let loaded = try? _loadModelExistential(type: type, id: id) {
+                identityMapLock.withLock { _ in
+                    identityMap[id] = WeakRef(loaded)
+                }
+                return loaded
+            }
+        }
+
+        // SwiftData 在缺失时仍返回模型；这里用 schema 首类型生成 fault，
+        // 调用方 `as? ConcreteType` 会得到 nil，语义可接受。
+        guard let fallbackType = schemaTypes.first else {
+            preconditionFailure(
+                "JsonData.ModelContext.model(for:): no schema types registered; call ModelContainer bootstrap first. id=\(id.id)"
+            )
+        }
+        let fault = fallbackType.init()
+        fault.persistentModelID = id
+        fault._modelContext = self
+        fault._isFault = true
+        identityMapLock.withLock { _ in
+            identityMap[id] = WeakRef(fault)
+        }
+        return fault
+    }
+
+    /// 通过持久化标识符查找并返回指定类型的模型实例。
     public func model<T: PersistentModel>(for id: PersistentIdentifier) -> T? {
         if let cached = identityMapLock.withLock({ _ -> T? in
             if let ref = identityMap[id], let cached = ref.value as? T, !cached._isFault, !cached._isFaulting {

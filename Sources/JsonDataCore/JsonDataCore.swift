@@ -292,16 +292,13 @@ public struct Field<Value> {
                     instance._modelContext?._modelDidChange(instance)
                     
                     if let ctx = instance._modelContext {
+                        // 必须走完整的 ctx.insert 以触发 _processCascadeInsert：
+                        // 关系目标常在对象拥有 context 之前就被赋值（如 init 里的
+                        // applyPayload），旧的裸注册只保存对象本身，其关系目标永远
+                        // 不会入库（事件存了、内容全丢 → 群聊空白气泡）。
                         func _insert(_ obj: any PersistentModel) {
                             if obj._modelContext == nil {
-                                obj._modelContext = ctx
-                                obj._isFault = false
-                                let id = obj.persistentModelID
-                                ctx.identityMapLock.withLock { _ in
-                                    ctx.identityMap[id] = WeakRef(obj)
-                                }
-                                ctx.insertedModels[id] = obj
-                                ctx._scheduleAutosave()
+                                ctx.insert(obj)
                             }
                         }
                         if let newObj = newValue as? any PersistentModel {

@@ -18,6 +18,7 @@ private struct PersistentStoredProperty {
     let isOptional: Bool
     let attributeOptions: [String]
     let relationshipInfo: RelationshipInfo?
+    let initializerExpr: String?
 
     struct RelationshipInfo {
         let deleteRule: String
@@ -151,7 +152,8 @@ private extension VariableDeclSyntax {
                     baseType: baseType,
                     isOptional: isOptional,
                     attributeOptions: attributeOptions,
-                    relationshipInfo: relationshipInfo
+                    relationshipInfo: relationshipInfo,
+                    initializerExpr: binding.initializer?.value.trimmedDescription
                 )
             )
         }
@@ -558,9 +560,19 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                 """,
                 """
                 \(raw: {
-                    var initBody = "self.persistentModelID = PersistentIdentifier(id: \"\")\n"
+                    // 空 id 会让多个 init() 实例在 identityMap 撞车；随机 UUID 与
+                    // SwiftData 语义一致（fault/加载路径随后都会覆写 persistentModelID）。
+                    var initBody = "self.persistentModelID = PersistentIdentifier(id: UUID().uuidString)\n"
                     for variable in variables {
-                        initBody += "self._\(variable.name) = Field<\(variable.type)>()\n"
+                        if let initExpr = variable.initializerExpr {
+                            // 带声明初始值的属性用其填充 Field 默认值：init() 不再产出
+                            // 全 nil 空壳——直接 init() 后保存曾把 NOT NULL 列写成 NULL
+                            //（SQLite error 19），且用户 init 的默认参数调用如 Model()
+                            // 会被精确匹配的 init() 拦截，必须保证其结果合法。
+                            initBody += "self._\(variable.name) = Field<\(variable.type)>(wrappedValue: \(initExpr))\n"
+                        } else {
+                            initBody += "self._\(variable.name) = Field<\(variable.type)>()\n"
+                        }
                     }
                     return "public required init() {\n\(initBody)}"
                 }())

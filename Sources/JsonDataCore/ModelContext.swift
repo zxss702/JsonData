@@ -613,29 +613,35 @@ public final class ModelContext: @unchecked Sendable {
             let rows = try Row.fetchAll(db, sql: query.sql, arguments: query.arguments)
             let cols = self._columns(for: T.self)
             
-            var results = self.identityMapLock.withLock { _ -> [T] in
-                var results = [T]()
-                for row in rows {
-                    let idStr: String = row["_id"]
-                    let id = PersistentIdentifier(id: idStr)
-                    
-                    if let ref = self.identityMap[id], let cached = ref.value as? T {
-                        results.append(cached)
-                        continue
-                    }
-                    
-                    let model = T()
-                    model.persistentModelID = id
-                    let values = self._rowToValues(row, columns: cols)
-                    if let schemaModel = model as? any _JsonDataSchemaProviding {
-                        schemaModel._populateFromColumnValues(values, context: self)
-                    }
-                    model._modelContext = self
-                    model._isFault = false
-                    self.identityMap[id] = WeakRef(model)
-                    results.append(model)
+            // IMPORTANT: do NOT hold `identityMapLock` across
+            // `_populateFromColumnValues`. Hydrating a model with a to-one
+            // relationship calls `_jsonDataDecode(context:)`, which re-enters the
+            // identity map via `_registeredModel` / `_registerInIdentityMap` and
+            // therefore re-acquires `identityMapLock`. That Mutex is
+            // non-recursive, so holding it here self-deadlocks the writer queue
+            // during a ValueObservation refresh (every `@Query` on a model with a
+            // relationship froze the whole app right after a DB write). Mirror
+            // `fetch()`: only take the lock for short identity-map reads/writes.
+            var results = [T]()
+            for row in rows {
+                let idStr: String = row["_id"]
+                let id = PersistentIdentifier(id: idStr)
+
+                if let cached = self.identityMapLock.withLock({ _ in self.identityMap[id]?.value as? T }) {
+                    results.append(cached)
+                    continue
                 }
-                return results
+
+                let model = T()
+                model.persistentModelID = id
+                let values = self._rowToValues(row, columns: cols)
+                if let schemaModel = model as? any _JsonDataSchemaProviding {
+                    schemaModel._populateFromColumnValues(values, context: self)
+                }
+                model._modelContext = self
+                model._isFault = false
+                self.identityMapLock.withLock { _ in self.identityMap[id] = WeakRef(model) }
+                results.append(model)
             }
             // Apply in-memory sort to match fetch behavior,
             // since cached objects may have been mutated in memory

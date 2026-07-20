@@ -131,7 +131,15 @@ public final class ModelContext: @unchecked Sendable {
         self.databaseQueue = container.mainContext.databaseQueue
         registerSelf()
         // @ModelActor / child contexts must inherit schema for non-generic model(for:).
-        _bootstrapSchema(container.schema)
+        // NOTE: Only copy the schema metadata here — do NOT call `_bootstrapSchema`,
+        // which issues a synchronous `databaseQueue.write`. `container.mainContext`
+        // already ran that write once at container creation, and this context shares
+        // the exact same `databaseQueue`. Re-running it here raced with the shared
+        // queue and could reenter GRDB's serialized writer (safe/fatal on Darwin via
+        // `SchedulingWatchdog`, but silently deadlocked on Windows where the
+        // dispatch-specific reentrancy check isn't reliable). Tables are created
+        // lazily by `_ensureTable` the first time each type is actually touched.
+        self.schemaTypes = container.schema
     }
 
     // @contributor

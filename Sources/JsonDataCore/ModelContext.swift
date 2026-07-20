@@ -130,6 +130,8 @@ public final class ModelContext: @unchecked Sendable {
         self.baseURL = container.mainContext.baseURL
         self.databaseQueue = container.mainContext.databaseQueue
         registerSelf()
+        // @ModelActor / child contexts must inherit schema for non-generic model(for:).
+        _bootstrapSchema(container.schema)
     }
 
     // @contributor

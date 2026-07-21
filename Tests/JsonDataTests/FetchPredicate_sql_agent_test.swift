@@ -9,7 +9,7 @@ final class FetchPredicate_sql_agent_test: XCTestCase {
         let dbURL = directory.appendingPathComponent("db.sqlite")
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let insertContext = ModelContext(url: dbURL)
+        let insertContext = try ModelContext(url: dbURL)
         let alice = FetchPredicateAgentUser(name: "A", age: 21)
         insertContext.insert(alice)
         try? insertContext.save()
@@ -18,7 +18,7 @@ final class FetchPredicate_sql_agent_test: XCTestCase {
         insertContext.insert(FetchPredicateAgentUser(name: "A", age: 15))
         try? insertContext.save()
 
-        let predicateContext = ModelContext(url: dbURL)
+        let predicateContext = try ModelContext(url: dbURL)
         let descriptor = FetchDescriptor<FetchPredicateAgentUser>(
             predicate: #Predicate<FetchPredicateAgentUser> { $0.age > 18 && $0.name == "A" }
         )
@@ -26,7 +26,7 @@ final class FetchPredicate_sql_agent_test: XCTestCase {
         XCTAssertEqual(matches.count, 1)
         XCTAssertEqual(matches.first?.persistentModelID, alice.persistentModelID)
 
-        let plainFetchContext = ModelContext(url: dbURL)
+        let plainFetchContext = try ModelContext(url: dbURL)
         let all = try plainFetchContext.fetch(FetchDescriptor<FetchPredicateAgentUser>())
         XCTAssertEqual(all.count, 3)
         XCTAssertTrue(all.first?._isFault == true)

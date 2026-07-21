@@ -46,7 +46,7 @@ final class CrossPlatformDataTypeExpansionTests: XCTestCase {
         let tempDir = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
         testDir = tempDir
-        container = ModelContainer(for: [DataTypesTarget.self], at: testDir.appendingPathComponent("datatypes.sqlite"))
+        container = try ModelContainer(for: [DataTypesTarget.self], at: testDir.appendingPathComponent("datatypes.sqlite"))
         context = container.mainContext
     }
     

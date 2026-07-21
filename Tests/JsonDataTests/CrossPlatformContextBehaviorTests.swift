@@ -23,7 +23,7 @@ final class CrossPlatformContextBehaviorTests: XCTestCase {
         let tempDir = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
         testDir = tempDir
-        container = ModelContainer(for: [ContextTarget.self], at: testDir.appendingPathComponent("context.sqlite"))
+        container = try ModelContainer(for: [ContextTarget.self], at: testDir.appendingPathComponent("context.sqlite"))
         context = container.mainContext
     }
     

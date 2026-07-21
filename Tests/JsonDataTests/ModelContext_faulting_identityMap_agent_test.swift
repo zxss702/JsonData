@@ -9,12 +9,12 @@ final class ModelContext_faulting_identityMap_agent_test: XCTestCase {
         let dbURL = directory.appendingPathComponent("db.sqlite")
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let insertContext = ModelContext(url: dbURL)
+        let insertContext = try ModelContext(url: dbURL)
         let user = FaultingIdentityAgentUser(name: "A", age: 21)
         insertContext.insert(user)
         try? insertContext.save()
 
-        let context = ModelContext(url: dbURL)
+        let context = try ModelContext(url: dbURL)
         let fetched = try context.fetch(FetchDescriptor<FaultingIdentityAgentUser>())
         let fault = try XCTUnwrap(fetched.first)
 

@@ -4,6 +4,21 @@ import Synchronization
 
 import GRDB
 
+/// JsonData 存储层错误。
+public enum JsonDataStoreError: Error, LocalizedError, Sendable {
+    case databaseIntegrityFailed(String)
+    case databaseOpenFailed(underlying: Error)
+
+    public var errorDescription: String? {
+        switch self {
+        case .databaseIntegrityFailed(let message):
+            return "Database integrity check failed: \(message)"
+        case .databaseOpenFailed(let underlying):
+            return "Failed to open database: \(underlying.localizedDescription)"
+        }
+    }
+}
+
 #if canImport(Glibc)
 import Glibc
 #elseif canImport(Musl)
@@ -51,7 +66,13 @@ private func registerAtExit() {
 /// 数据模型上下文，管理持久化对象的生命周期与数据库操作。
 public final class ModelContext: @unchecked Sendable {
     /// 共享的单例上下文实例。
-    public static let shared = ModelContext()
+    public static let shared: ModelContext = {
+        do {
+            return try ModelContext()
+        } catch {
+            fatalError("JsonData default store failed to open: \(error)")
+        }
+    }()
     /// 数据库文件所在的基础目录 URL。
     public let baseURL: URL
 
@@ -108,21 +129,58 @@ public final class ModelContext: @unchecked Sendable {
     }
 
     /// 使用默认文档目录创建上下文。
-    init() {
+    init() throws {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        baseURL = docs.appendingPathComponent("JsonDataStore")
-        try? FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+        let baseURL = docs.appendingPathComponent("JsonDataStore")
         let dbURL = baseURL.appendingPathComponent("JsonData.sqlite")
-        databaseQueue = try! DatabaseQueue(path: dbURL.path)
+        self.baseURL = baseURL
+        self.databaseQueue = try Self.openDatabaseQueue(at: dbURL, baseURL: baseURL)
         registerSelf()
     }
 
     /// 使用指定的数据库文件 URL 创建上下文。
-    public init(url: URL) {
+    public init(url: URL) throws {
         self.baseURL = url.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
-        databaseQueue = try! DatabaseQueue(path: url.path)
+        self.databaseQueue = try Self.openDatabaseQueue(at: url, baseURL: baseURL)
         registerSelf()
+    }
+
+    // @contributor
+    private static func openDatabaseQueue(at dbURL: URL, baseURL: URL) throws -> DatabaseQueue {
+        do {
+            try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+        } catch {
+            throw JsonDataStoreError.databaseOpenFailed(underlying: error)
+        }
+
+        do {
+            let queue = try DatabaseQueue(path: dbURL.path)
+            try queue.read { db in
+                try _verifyDatabaseIntegrity(in: db)
+            }
+            return queue
+        } catch let error as JsonDataStoreError {
+            throw error
+        } catch let error as DatabaseError {
+            if error.resultCode == .SQLITE_CORRUPT
+                || error.message?.localizedCaseInsensitiveContains("malformed") == true {
+                throw JsonDataStoreError.databaseIntegrityFailed(
+                    error.message ?? "database disk image is malformed"
+                )
+            }
+            throw JsonDataStoreError.databaseOpenFailed(underlying: error)
+        } catch {
+            throw JsonDataStoreError.databaseOpenFailed(underlying: error)
+        }
+    }
+
+    // @contributor
+    private static func _verifyDatabaseIntegrity(in db: Database) throws {
+        let rows = try String.fetchAll(db, sql: "PRAGMA quick_check")
+        let result = rows.joined(separator: ", ")
+        guard result.lowercased() == "ok" else {
+            throw JsonDataStoreError.databaseIntegrityFailed(result)
+        }
     }
     
     /// 从现有的模型容器创建上下文，共享其数据库连接。
@@ -182,11 +240,11 @@ public final class ModelContext: @unchecked Sendable {
     private var initializedTables: Set<String> = []
     
     /// 根据给定的模型类型列表初始化数据库表结构。此方法供内部使用。
-    public func _bootstrapSchema(_ schema: [any PersistentModel.Type]) {
+    public func _bootstrapSchema(_ schema: [any PersistentModel.Type]) throws {
         schemaTypes = schema
-        try? databaseQueue.write { db in
+        try databaseQueue.write { db in
             for modelType in schema {
-                try? self._ensureTable(for: modelType, in: db)
+                try self._ensureTable(for: modelType, in: db)
             }
         }
     }

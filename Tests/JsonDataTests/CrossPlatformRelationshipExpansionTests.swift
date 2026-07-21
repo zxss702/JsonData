@@ -68,7 +68,7 @@ final class CrossPlatformRelationshipExpansionTests: XCTestCase {
         let tempDir = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
         testDir = tempDir
-        container = ModelContainer(for: [RelA.self, RelB.self, RelC.self, RelD.self], at: testDir.appendingPathComponent("relations.sqlite"))
+        container = try ModelContainer(for: [RelA.self, RelB.self, RelC.self, RelD.self], at: testDir.appendingPathComponent("relations.sqlite"))
         context = container.mainContext
     }
     

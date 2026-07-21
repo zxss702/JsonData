@@ -10,17 +10,17 @@ final class TransientTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let note = TransientNote(title: "hello", cache: "skip", qualifiedCache: "skip-too")
-        let insertContext = ModelContext(url: dbURL)
+        let insertContext = try ModelContext(url: dbURL)
         insertContext.insert(note)
         try? insertContext.save()
 
-        let reloadedContext = ModelContext(url: dbURL)
+        let reloadedContext = try ModelContext(url: dbURL)
         let reloaded: TransientNote? = reloadedContext.model(for: note.persistentModelID)
         XCTAssertEqual(reloaded?.title, "hello")
         XCTAssertNil(reloaded?.cache)
         XCTAssertNil(reloaded?.qualifiedCache)
 
-        let faultContext = ModelContext(url: dbURL)
+        let faultContext = try ModelContext(url: dbURL)
         let fetched = try faultContext.fetch(FetchDescriptor<TransientNote>())
         let faulted = try XCTUnwrap(fetched.first)
         XCTAssertTrue(faulted._isFault)

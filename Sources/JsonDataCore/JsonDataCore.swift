@@ -319,7 +319,7 @@ public struct Field<Value> {
                             instance._isSyncingInverse = true
                             defer { instance._isSyncingInverse = false }
                             
-                            // Clear old inverse (to-many: remove element; to-one: nil)
+                            // Clear old inverse: to-many peer → remove element; to-one peer → nil
                             if let oldObj = oldValue as? any PersistentModel {
                                 oldObj._isSyncingInverse = true
                                 oldObj._jsonDataRemoveValue(instance, forPropertyName: inverseName)
@@ -327,7 +327,7 @@ public struct Field<Value> {
                             } else if let oldArr = oldValue as? [any PersistentModel] {
                                 for oldObj in oldArr {
                                     oldObj._isSyncingInverse = true
-                                    oldObj._jsonDataRemoveValue(instance, forPropertyName: inverseName)
+                                    oldObj._jsonDataSetValue(nil, forPropertyName: inverseName)
                                     oldObj._isSyncingInverse = false
                                 }
                             }

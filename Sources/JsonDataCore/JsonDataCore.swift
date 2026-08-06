@@ -353,7 +353,13 @@ public struct Field<Value> {
                                 guard let peerSchema = type(of: peer) as? any _JsonDataSchemaProviding.Type else {
                                     return nil
                                 }
-                                guard let match = peerSchema._jsonDataRelationships.first(where: { $0.inverseName == propName }) else {
+                                // Many parent properties can share the same inverse name (e.g. all `\Foo.record`).
+                                // Must also match destinationType to the child being assigned.
+                                let childType = type(of: instance)
+                                guard let match = peerSchema._jsonDataRelationships.first(where: {
+                                    $0.inverseName == propName
+                                        && ObjectIdentifier($0.destinationType) == ObjectIdentifier(childType)
+                                }) else {
                                     return nil
                                 }
                                 return (peer, match.propertyName)

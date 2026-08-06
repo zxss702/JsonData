@@ -309,36 +309,29 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                 """
             }
             
-            let scalarBaseTypes: Set<String> = [
-                "String", "Int", "Int8", "Int16", "Int32", "Int64",
-                "UInt", "UInt8", "UInt16", "UInt32", "UInt64",
-                "Double", "Float", "Bool", "UUID", "Date", "Data", "URL"
-            ]
-            
             let setValueBranches = variables.map { variable in
                 let isArray = variable.baseType.hasPrefix("[") && variable.baseType.hasSuffix("]") && !variable.baseType.contains(":")
                 let elementType = isArray ? String(variable.baseType.dropFirst().dropLast()) : variable.baseType
+                let isRelationshipArray = isArray && variable.relationshipInfo != nil
                 let arrayBlock: String
-                if isArray {
-                    if scalarBaseTypes.contains(elementType) {
-                        arrayBlock = """
-                            if let val = value as? \(elementType) {
-                                var current = self.\(variable.name)
+                if isRelationshipArray {
+                    arrayBlock = """
+                        if let val = value as? \(elementType) {
+                            var current = self.\(variable.name)
+                            if !current.contains(where: { $0.persistentModelID == val.persistentModelID }) {
                                 current.append(val)
                                 self.\(variable.name) = current
-                            } else 
-                        """
-                    } else {
-                        arrayBlock = """
-                            if let val = value as? \(elementType) {
-                                var current = self.\(variable.name)
-                                if !current.contains(where: { $0.persistentModelID == val.persistentModelID }) {
-                                    current.append(val)
-                                    self.\(variable.name) = current
-                                }
-                            } else 
-                        """
-                    }
+                            }
+                        } else 
+                    """
+                } else if isArray {
+                    arrayBlock = """
+                        if let val = value as? \(elementType) {
+                            var current = self.\(variable.name)
+                            current.append(val)
+                            self.\(variable.name) = current
+                        } else 
+                    """
                 } else {
                     arrayBlock = ""
                 }
@@ -361,10 +354,10 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
             """
             
             let removeValueBranches = variables.compactMap { variable -> String? in
+                guard variable.relationshipInfo != nil else { return nil }
                 let isArray = variable.baseType.hasPrefix("[") && variable.baseType.hasSuffix("]") && !variable.baseType.contains(":")
                 let elementType = isArray ? String(variable.baseType.dropFirst().dropLast()) : variable.baseType
                 if isArray {
-                    guard !scalarBaseTypes.contains(elementType) else { return nil }
                     return """
                     if propertyName == "\(variable.name)" {
                         if let val = value as? \(elementType) {
@@ -378,7 +371,7 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                         return
                     }
                     """
-                } else if variable.isOptional && !scalarBaseTypes.contains(variable.baseType) {
+                } else if variable.isOptional {
                     return """
                     if propertyName == "\(variable.name)" {
                         if let val = value as? \(variable.baseType),

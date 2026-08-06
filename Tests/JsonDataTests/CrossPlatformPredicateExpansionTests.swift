@@ -31,7 +31,7 @@ final class CrossPlatformPredicateExpansionTests: XCTestCase {
         let tempDir = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
         testDir = tempDir
-        container = ModelContainer(for: [PredicateTarget.self], at: testDir.appendingPathComponent("predicates.sqlite"))
+        container = try ModelContainer(for: [PredicateTarget.self], at: testDir.appendingPathComponent("predicates.sqlite"))
         context = container.mainContext
         
         // Insert sample data

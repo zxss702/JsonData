@@ -9,14 +9,14 @@ final class ModelContext_sqlite_bootstrap_agent_test: XCTestCase {
         let dbURL = directory.appendingPathComponent("db.sqlite")
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let insertContext = ModelContext(url: dbURL)
+        let insertContext = try ModelContext(url: dbURL)
         let user = SQLiteBootstrapAgentUser(name: "A", age: 21)
         insertContext.insert(user)
         try? insertContext.save()
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: dbURL.path))
 
-        let reloadContext = ModelContext(url: dbURL)
+        let reloadContext = try ModelContext(url: dbURL)
         let reloaded: SQLiteBootstrapAgentUser? = reloadContext.model(for: user.persistentModelID)
         XCTAssertEqual(reloaded?.name, "A")
         XCTAssertEqual(reloaded?.age, 21)

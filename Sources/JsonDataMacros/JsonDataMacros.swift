@@ -18,6 +18,7 @@ private struct PersistentStoredProperty {
     let isOptional: Bool
     let attributeOptions: [String]
     let relationshipInfo: RelationshipInfo?
+    let initializerExpr: String?
 
     struct RelationshipInfo {
         let deleteRule: String
@@ -151,7 +152,8 @@ private extension VariableDeclSyntax {
                     baseType: baseType,
                     isOptional: isOptional,
                     attributeOptions: attributeOptions,
-                    relationshipInfo: relationshipInfo
+                    relationshipInfo: relationshipInfo,
+                    initializerExpr: binding.initializer?.value.trimmedDescription
                 )
             )
         }
@@ -457,7 +459,31 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
             // ── Generate _populateFromColumnValues ──
             let populateLines = persistentVariables.map { variable -> String in
                 let name = variable.name
-                let fallback = variable.isOptional ? " else { self._\(name) = Field(wrappedValue: nil) }" : ""
+                let fallback: String
+                if variable.isOptional {
+                    fallback = " else { self._\(name) = Field(wrappedValue: nil) }"
+                } else {
+                    switch variable.baseType {
+                    case "String":
+                        fallback = " else { self._\(name) = Field(wrappedValue: \"\") }"
+                    case "Int", "Int8", "Int16", "Int32", "Int64", "UInt", "UInt8", "UInt16", "UInt32", "UInt64":
+                        fallback = " else { self._\(name) = Field(wrappedValue: 0) }"
+                    case "Double", "Float":
+                        fallback = " else { self._\(name) = Field(wrappedValue: 0) }"
+                    case "Bool":
+                        fallback = " else { self._\(name) = Field(wrappedValue: false) }"
+                    case "UUID":
+                        fallback = " else { self._\(name) = Field(wrappedValue: UUID(uuidString: \"00000000-0000-0000-0000-000000000000\")!) }"
+                    case "Date":
+                        fallback = " else { self._\(name) = Field(wrappedValue: Date(timeIntervalSinceReferenceDate: 0)) }"
+                    case "Data":
+                        fallback = " else { self._\(name) = Field(wrappedValue: Data()) }"
+                    case "URL":
+                        fallback = " else { self._\(name) = Field(wrappedValue: URL(fileURLWithPath: \"/\")) }"
+                    default:
+                        fallback = ""
+                    }
+                }
                 
                 let code: String
                 if variable.attributeOptions.contains(where: { $0.contains(".externalStorage") }) {
@@ -491,6 +517,8 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                 case "String":
                     code = """
                     if let v = values["\(name)"] as? String {
+                        self._\(name) = Field(wrappedValue: v)
+                    } else if let d = values["\(name)"] as? Data, let v = String(data: d, encoding: .utf8) {
                         self._\(name) = Field(wrappedValue: v)
                     }\(fallback)
                     """
@@ -580,10 +608,8 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                 """,
                 """
                 public func fault() {
-                    if _isFault {
-                        _isFault = false
-                        _isFaulting = true
-                        defer { _isFaulting = false }
+                    // Skip while already faulting so property setters during _copy do not re-enter.
+                    if _isFault && !_isFaulting {
                         _modelContext?._faultIn(self)
                     }
                 }
@@ -596,9 +622,19 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                 """,
                 """
                 \(raw: {
-                    var initBody = "self.persistentModelID = PersistentIdentifier(id: \"\")\n"
+                    // 空 id 会让多个 init() 实例在 identityMap 撞车；随机 UUID 与
+                    // SwiftData 语义一致（fault/加载路径随后都会覆写 persistentModelID）。
+                    var initBody = "self.persistentModelID = PersistentIdentifier(id: UUID().uuidString)\n"
                     for variable in variables {
-                        initBody += "self._\(variable.name) = Field<\(variable.type)>()\n"
+                        if let initExpr = variable.initializerExpr {
+                            // 带声明初始值的属性用其填充 Field 默认值：init() 不再产出
+                            // 全 nil 空壳——直接 init() 后保存曾把 NOT NULL 列写成 NULL
+                            //（SQLite error 19），且用户 init 的默认参数调用如 Model()
+                            // 会被精确匹配的 init() 拦截，必须保证其结果合法。
+                            initBody += "self._\(variable.name) = Field<\(variable.type)>(wrappedValue: \(initExpr))\n"
+                        } else {
+                            initBody += "self._\(variable.name) = Field<\(variable.type)>()\n"
+                        }
                     }
                     return "public required init() {\n\(initBody)}"
                 }())

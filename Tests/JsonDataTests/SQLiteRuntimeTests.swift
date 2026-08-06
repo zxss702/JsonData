@@ -9,7 +9,7 @@ final class SQLiteRuntimeTests: XCTestCase {
         let dbURL = directory.appendingPathComponent("db.sqlite")
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let context = ModelContext(url: dbURL)
+        let context = try ModelContext(url: dbURL)
         let alice = RuntimeUser(name: "A", age: 21)
         let bob = RuntimeUser(name: "B", age: 17)
         let carol = RuntimeUser(name: "A", age: 15)
@@ -43,7 +43,7 @@ final class SQLiteRuntimeTests: XCTestCase {
         let dbURL = directory.appendingPathComponent("db.sqlite")
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let context = ModelContext(url: dbURL)
+        let context = try ModelContext(url: dbURL)
         context.insert(RuntimeUser(name: "C", age: 30))
         try? context.save()
         context.insert(RuntimeUser(name: "A", age: 10))

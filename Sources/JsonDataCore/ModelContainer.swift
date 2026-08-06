@@ -17,7 +17,7 @@ public final class ModelContainer: @unchecked Sendable {
         self.schema = types
         self.configurations = [ModelConfiguration()]
         self.mainContext = ModelContext.shared
-        self.mainContext._bootstrapSchema(self.schema)
+        try self.mainContext._bootstrapSchema(self.schema)
     }
     
     /// 使用指定模型类型数组及默认存储路径初始化容器。
@@ -27,18 +27,19 @@ public final class ModelContainer: @unchecked Sendable {
         self.schema = types
         self.configurations = [ModelConfiguration()]
         self.mainContext = ModelContext.shared
-        self.mainContext._bootstrapSchema(self.schema)
+        try self.mainContext._bootstrapSchema(self.schema)
     }
     
     /// 使用指定模型类型和自定义存储路径初始化容器。
     /// - Parameters:
     ///   - types: 需要持久化的模型类型数组。
     ///   - url: 数据库文件的存储路径。
-    public init(for types: [any PersistentModel.Type], at url: URL) {
+    /// - Throws: 若初始化失败则抛出错误。
+    public init(for types: [any PersistentModel.Type], at url: URL) throws {
         self.schema = types
         self.configurations = [ModelConfiguration(url: url)]
-        self.mainContext = ModelContext(url: url)
-        self.mainContext._bootstrapSchema(self.schema)
+        self.mainContext = try ModelContext(url: url)
+        try self.mainContext._bootstrapSchema(self.schema)
     }
 
     /// 使用指定模型类型及一项或多项配置初始化容器。
@@ -50,11 +51,11 @@ public final class ModelContainer: @unchecked Sendable {
         self.schema = types
         self.configurations = configurations
         if let firstConfig = configurations.first, let url = firstConfig.url {
-            self.mainContext = ModelContext(url: url)
+            self.mainContext = try ModelContext(url: url)
         } else {
             self.mainContext = ModelContext.shared
         }
-        self.mainContext._bootstrapSchema(self.schema)
+        try self.mainContext._bootstrapSchema(self.schema)
     }
     /// 使用 ``Schema`` 及配置列表初始化容器。
     /// - Parameters:
@@ -65,11 +66,11 @@ public final class ModelContainer: @unchecked Sendable {
         self.schema = schema.models
         self.configurations = configurations
         if let firstConfig = configurations.first, let url = firstConfig.url {
-            self.mainContext = ModelContext(url: url)
+            self.mainContext = try ModelContext(url: url)
         } else {
             self.mainContext = ModelContext.shared
         }
-        self.mainContext._bootstrapSchema(self.schema)
+        try self.mainContext._bootstrapSchema(self.schema)
     }
 }
 

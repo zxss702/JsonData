@@ -4,6 +4,21 @@ import Synchronization
 
 import GRDB
 
+/// JsonData 存储层错误。
+public enum JsonDataStoreError: Error, LocalizedError, Sendable {
+    case databaseIntegrityFailed(String)
+    case databaseOpenFailed(underlying: Error)
+
+    public var errorDescription: String? {
+        switch self {
+        case .databaseIntegrityFailed(let message):
+            return "Database integrity check failed: \(message)"
+        case .databaseOpenFailed(let underlying):
+            return "Failed to open database: \(underlying.localizedDescription)"
+        }
+    }
+}
+
 #if canImport(Glibc)
 import Glibc
 #elseif canImport(Musl)
@@ -51,7 +66,13 @@ private func registerAtExit() {
 /// 数据模型上下文，管理持久化对象的生命周期与数据库操作。
 public final class ModelContext: @unchecked Sendable {
     /// 共享的单例上下文实例。
-    public static let shared = ModelContext()
+    public static let shared: ModelContext = {
+        do {
+            return try ModelContext()
+        } catch {
+            fatalError("JsonData default store failed to open: \(error)")
+        }
+    }()
     /// 数据库文件所在的基础目录 URL。
     public let baseURL: URL
 
@@ -108,21 +129,58 @@ public final class ModelContext: @unchecked Sendable {
     }
 
     /// 使用默认文档目录创建上下文。
-    init() {
+    init() throws {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        baseURL = docs.appendingPathComponent("JsonDataStore")
-        try? FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+        let baseURL = docs.appendingPathComponent("JsonDataStore")
         let dbURL = baseURL.appendingPathComponent("JsonData.sqlite")
-        databaseQueue = try! DatabaseQueue(path: dbURL.path)
+        self.baseURL = baseURL
+        self.databaseQueue = try Self.openDatabaseQueue(at: dbURL, baseURL: baseURL)
         registerSelf()
     }
 
     /// 使用指定的数据库文件 URL 创建上下文。
-    public init(url: URL) {
+    public init(url: URL) throws {
         self.baseURL = url.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
-        databaseQueue = try! DatabaseQueue(path: url.path)
+        self.databaseQueue = try Self.openDatabaseQueue(at: url, baseURL: baseURL)
         registerSelf()
+    }
+
+    // @contributor
+    private static func openDatabaseQueue(at dbURL: URL, baseURL: URL) throws -> DatabaseQueue {
+        do {
+            try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+        } catch {
+            throw JsonDataStoreError.databaseOpenFailed(underlying: error)
+        }
+
+        do {
+            let queue = try DatabaseQueue(path: dbURL.path)
+            try queue.read { db in
+                try _verifyDatabaseIntegrity(in: db)
+            }
+            return queue
+        } catch let error as JsonDataStoreError {
+            throw error
+        } catch let error as DatabaseError {
+            if error.resultCode == .SQLITE_CORRUPT
+                || error.message?.localizedCaseInsensitiveContains("malformed") == true {
+                throw JsonDataStoreError.databaseIntegrityFailed(
+                    error.message ?? "database disk image is malformed"
+                )
+            }
+            throw JsonDataStoreError.databaseOpenFailed(underlying: error)
+        } catch {
+            throw JsonDataStoreError.databaseOpenFailed(underlying: error)
+        }
+    }
+
+    // @contributor
+    private static func _verifyDatabaseIntegrity(in db: Database) throws {
+        let rows = try String.fetchAll(db, sql: "PRAGMA quick_check")
+        let result = rows.joined(separator: ", ")
+        guard result.lowercased() == "ok" else {
+            throw JsonDataStoreError.databaseIntegrityFailed(result)
+        }
     }
     
     /// 从现有的模型容器创建上下文，共享其数据库连接。
@@ -130,6 +188,16 @@ public final class ModelContext: @unchecked Sendable {
         self.baseURL = container.mainContext.baseURL
         self.databaseQueue = container.mainContext.databaseQueue
         registerSelf()
+        // @ModelActor / child contexts must inherit schema for non-generic model(for:).
+        // NOTE: Only copy the schema metadata here — do NOT call `_bootstrapSchema`,
+        // which issues a synchronous `databaseQueue.write`. `container.mainContext`
+        // already ran that write once at container creation, and this context shares
+        // the exact same `databaseQueue`. Re-running it here raced with the shared
+        // queue and could reenter GRDB's serialized writer (safe/fatal on Darwin via
+        // `SchedulingWatchdog`, but silently deadlocked on Windows where the
+        // dispatch-specific reentrancy check isn't reliable). Tables are created
+        // lazily by `_ensureTable` the first time each type is actually touched.
+        self.schemaTypes = container.schema
     }
 
     // @contributor
@@ -172,11 +240,11 @@ public final class ModelContext: @unchecked Sendable {
     private var initializedTables: Set<String> = []
     
     /// 根据给定的模型类型列表初始化数据库表结构。此方法供内部使用。
-    public func _bootstrapSchema(_ schema: [any PersistentModel.Type]) {
+    public func _bootstrapSchema(_ schema: [any PersistentModel.Type]) throws {
         schemaTypes = schema
-        try? databaseQueue.write { db in
+        try databaseQueue.write { db in
             for modelType in schema {
-                try? self._ensureTable(for: modelType, in: db)
+                try self._ensureTable(for: modelType, in: db)
             }
         }
     }
@@ -366,11 +434,25 @@ public final class ModelContext: @unchecked Sendable {
     /// 将模型插入上下文，在下一次保存时写入数据库。
     public func insert<T: PersistentModel>(_ model: T) {
         let shouldReturn = identityMapLock.withLock { _ -> Bool in
-            if insertedModels[model.persistentModelID] != nil || identityMap[model.persistentModelID] != nil {
+            let id = model.persistentModelID
+            if insertedModels[id] != nil {
                 return true
             }
-            identityMap[model.persistentModelID] = WeakRef(model)
-            insertedModels[model.persistentModelID] = model
+            if let ref = identityMap[id], let existing = ref.value {
+                if existing === model {
+                    insertedModels[id] = model
+                    return false
+                }
+                // Upgrade a relationship fault shell to the live inserted instance.
+                if existing._isFault {
+                    identityMap[id] = WeakRef(model)
+                    insertedModels[id] = model
+                    return false
+                }
+                return true
+            }
+            identityMap[id] = WeakRef(model)
+            insertedModels[id] = model
             return false
         }
         if shouldReturn { return }
@@ -589,29 +671,35 @@ public final class ModelContext: @unchecked Sendable {
             let rows = try Row.fetchAll(db, sql: query.sql, arguments: query.arguments)
             let cols = self._columns(for: T.self)
             
-            var results = self.identityMapLock.withLock { _ -> [T] in
-                var results = [T]()
-                for row in rows {
-                    let idStr: String = row["_id"]
-                    let id = PersistentIdentifier(id: idStr)
-                    
-                    if let ref = self.identityMap[id], let cached = ref.value as? T {
-                        results.append(cached)
-                        continue
-                    }
-                    
-                    let model = T()
-                    model.persistentModelID = id
-                    let values = self._rowToValues(row, columns: cols)
-                    if let schemaModel = model as? any _JsonDataSchemaProviding {
-                        schemaModel._populateFromColumnValues(values, context: self)
-                    }
-                    model._modelContext = self
-                    model._isFault = false
-                    self.identityMap[id] = WeakRef(model)
-                    results.append(model)
+            // IMPORTANT: do NOT hold `identityMapLock` across
+            // `_populateFromColumnValues`. Hydrating a model with a to-one
+            // relationship calls `_jsonDataDecode(context:)`, which re-enters the
+            // identity map via `_registeredModel` / `_registerInIdentityMap` and
+            // therefore re-acquires `identityMapLock`. That Mutex is
+            // non-recursive, so holding it here self-deadlocks the writer queue
+            // during a ValueObservation refresh (every `@Query` on a model with a
+            // relationship froze the whole app right after a DB write). Mirror
+            // `fetch()`: only take the lock for short identity-map reads/writes.
+            var results = [T]()
+            for row in rows {
+                let idStr: String = row["_id"]
+                let id = PersistentIdentifier(id: idStr)
+
+                if let cached = self.identityMapLock.withLock({ _ in self.identityMap[id]?.value as? T }) {
+                    results.append(cached)
+                    continue
                 }
-                return results
+
+                let model = T()
+                model.persistentModelID = id
+                let values = self._rowToValues(row, columns: cols)
+                if let schemaModel = model as? any _JsonDataSchemaProviding {
+                    schemaModel._populateFromColumnValues(values, context: self)
+                }
+                model._modelContext = self
+                model._isFault = false
+                self.identityMapLock.withLock { _ in self.identityMap[id] = WeakRef(model) }
+                results.append(model)
             }
             // Apply in-memory sort to match fetch behavior,
             // since cached objects may have been mutated in memory
@@ -826,18 +914,54 @@ public final class ModelContext: @unchecked Sendable {
         return model
     }
 
+    /// Returns a registered instance for `id` if present (fault or live).
+    internal func _registeredModel<T: PersistentModel>(for id: PersistentIdentifier) -> T? {
+        identityMapLock.withLock { _ in
+            identityMap[id]?.value as? T
+        }
+    }
+
+    /// Registers `model` in the identity map (does not insert / mark dirty).
+    internal func _registerInIdentityMap(_ model: any PersistentModel) {
+        identityMapLock.withLock { _ in
+            identityMap[model.persistentModelID] = WeakRef(model)
+        }
+    }
+
     /// 将惰性加载的模型实例填充完整数据。此方法供内部使用。
+    /// Only clears `_isFault` after a successful hydrate; load miss / error keeps the fault flag.
     public func _faultIn(_ model: any PersistentModel) {
         do {
-            // Load a fresh typed shell via dynamic type, then copy onto the cached instance.
             let id = model.persistentModelID
             let type = type(of: model)
-            guard let fullModel = try _loadModelExistential(type: type, id: id) else { return }
+
+            // Prefer a live non-fault instance already in the identity map (same id, different object).
+            // Inserted (unsaved) models are also registered in identityMap with _isFault == false.
+            // Assign inside the lock (don't return existential) to satisfy Swift 6 sending checks.
+            nonisolated(unsafe) var liveSource: (any PersistentModel)?
+            identityMapLock.withLock { _ in
+                guard let ref = identityMap[id], let cached = ref.value else { return }
+                if cached !== model, !cached._isFault, !cached._isFaulting {
+                    liveSource = cached
+                }
+            }
+
+            let fullModel: any PersistentModel
+            if let liveSource {
+                fullModel = liveSource
+            } else if let loaded = try _loadModelExistential(type: type, id: id) {
+                fullModel = loaded
+            } else {
+                // Keep _isFault == true so callers can retry; do not expose empty Fields as hydrated.
+                return
+            }
+
             model._isFaulting = true
             defer { model._isFaulting = false }
+            // Clear fault flag before _copy so Field setters' fault() calls are no-ops.
+            model._isFault = false
             model._copy(from: fullModel)
             model._modelContext = self
-            model._isFault = false
             identityMapLock.withLock { _ in
                 identityMap[model.persistentModelID] = WeakRef(model)
             }

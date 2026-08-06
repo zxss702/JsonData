@@ -46,7 +46,7 @@ final class CrossPlatformAdvancedEdgeCaseTests: XCTestCase {
         try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
         testDir = tempDir
         
-        container = ModelContainer(for: [AdvancedUser.self], at: testDir.appendingPathComponent("advanced_test.sqlite"))
+        container = try ModelContainer(for: [AdvancedUser.self], at: testDir.appendingPathComponent("advanced_test.sqlite"))
         context = container.mainContext
     }
     

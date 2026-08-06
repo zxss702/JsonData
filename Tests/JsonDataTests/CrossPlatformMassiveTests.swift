@@ -29,7 +29,7 @@ final class CrossPlatformMassiveTests: XCTestCase {
         let tempDir = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try fileManager.createDirectory(at: tempDir, withIntermediateDirectories: true)
         testDir = tempDir
-        container = ModelContainer(for: [MassiveTarget.self], at: testDir.appendingPathComponent("massive.sqlite"))
+        container = try ModelContainer(for: [MassiveTarget.self], at: testDir.appendingPathComponent("massive.sqlite"))
         context = container.mainContext
         
         for i in 1...10 {

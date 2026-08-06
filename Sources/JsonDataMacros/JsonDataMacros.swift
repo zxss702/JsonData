@@ -307,16 +307,39 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                 """
             }
             
+            let scalarBaseTypes: Set<String> = [
+                "String", "Int", "Int8", "Int16", "Int32", "Int64",
+                "UInt", "UInt8", "UInt16", "UInt32", "UInt64",
+                "Double", "Float", "Bool", "UUID", "Date", "Data", "URL"
+            ]
+            
             let setValueBranches = variables.map { variable in
                 let isArray = variable.baseType.hasPrefix("[") && variable.baseType.hasSuffix("]") && !variable.baseType.contains(":")
                 let elementType = isArray ? String(variable.baseType.dropFirst().dropLast()) : variable.baseType
-                let arrayBlock = isArray ? """
-                    if let val = value as? \(elementType) {
-                        var current = self.\(variable.name)
-                        current.append(val)
-                        self.\(variable.name) = current
-                    } else 
-                """ : ""
+                let arrayBlock: String
+                if isArray {
+                    if scalarBaseTypes.contains(elementType) {
+                        arrayBlock = """
+                            if let val = value as? \(elementType) {
+                                var current = self.\(variable.name)
+                                current.append(val)
+                                self.\(variable.name) = current
+                            } else 
+                        """
+                    } else {
+                        arrayBlock = """
+                            if let val = value as? \(elementType) {
+                                var current = self.\(variable.name)
+                                if !current.contains(where: { $0.persistentModelID == val.persistentModelID }) {
+                                    current.append(val)
+                                    self.\(variable.name) = current
+                                }
+                            } else 
+                        """
+                    }
+                } else {
+                    arrayBlock = ""
+                }
                 
                 return """
                 if propertyName == "\(variable.name)" {
@@ -334,7 +357,46 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                 \(setValueBranches)
             }
             """
-
+            
+            let removeValueBranches = variables.compactMap { variable -> String? in
+                let isArray = variable.baseType.hasPrefix("[") && variable.baseType.hasSuffix("]") && !variable.baseType.contains(":")
+                let elementType = isArray ? String(variable.baseType.dropFirst().dropLast()) : variable.baseType
+                if isArray {
+                    guard !scalarBaseTypes.contains(elementType) else { return nil }
+                    return """
+                    if propertyName == "\(variable.name)" {
+                        if let val = value as? \(elementType) {
+                            var current = self.\(variable.name)
+                            let before = current.count
+                            current.removeAll { $0.persistentModelID == val.persistentModelID }
+                            if current.count != before {
+                                self.\(variable.name) = current
+                            }
+                        }
+                        return
+                    }
+                    """
+                } else if variable.isOptional && !scalarBaseTypes.contains(variable.baseType) {
+                    return """
+                    if propertyName == "\(variable.name)" {
+                        if let val = value as? \(variable.baseType),
+                           let current = self.\(variable.name),
+                           current.persistentModelID == val.persistentModelID {
+                            self.\(variable.name) = nil
+                        }
+                        return
+                    }
+                    """
+                } else {
+                    return nil
+                }
+            }.joined(separator: "\n")
+            
+            let removeValueDecl = """
+            public func _jsonDataRemoveValue(_ value: Any, forPropertyName propertyName: String) {
+                \(removeValueBranches)
+            }
+            """
             // ── Generate _toColumnValues ──
             let toColumnLines = persistentVariables.map { variable -> String in
                 let name = variable.name
@@ -561,6 +623,9 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                 """,
                 """
                 \(raw: setValueDecl)
+                """,
+                """
+                \(raw: removeValueDecl)
                 """,
                 """
                 \(raw: indexesDecl)

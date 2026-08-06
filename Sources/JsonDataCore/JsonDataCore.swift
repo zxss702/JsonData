@@ -4,7 +4,7 @@ import Foundation
 /// 将类标记为持久化模型，自动生成 ``PersistentModel`` 协议所需的全部成员及数据库映射元数据。
 @attached(extension, conformances: PersistentModel, _JsonDataSchemaProviding)
 @attached(memberAttribute)
-@attached(member, names: named(_observationRegistrar), named(modelContext), named(_modelContext), named(_isFault), named(_isFaulting), named(access), named(withMutation), named(didChange), named(fault), named(_copy), named(init), named(persistentModelID), named(_jsonDataTableName), named(_jsonDataColumns), named(_jsonDataRelationships), named(_jsonDataPropertyName), named(_isSyncingInverse), named(_jsonDataSetValue), named(_jsonDataIndexes), named(_jsonDataUniques), named(_toColumnValues), named(_populateFromColumnValues))
+@attached(member, names: named(_observationRegistrar), named(modelContext), named(_modelContext), named(_isFault), named(_isFaulting), named(access), named(withMutation), named(didChange), named(fault), named(_copy), named(init), named(persistentModelID), named(_jsonDataTableName), named(_jsonDataColumns), named(_jsonDataRelationships), named(_jsonDataPropertyName), named(_isSyncingInverse), named(_jsonDataSetValue), named(_jsonDataRemoveValue), named(_jsonDataIndexes), named(_jsonDataUniques), named(_toColumnValues), named(_populateFromColumnValues))
 public macro Model() = #externalMacro(module: "JsonDataMacros", type: "ModelMacro")
 
 @available(swift 5.9)
@@ -77,6 +77,7 @@ public protocol PersistentModel: AnyObject, Observable, Hashable, Equatable, Ide
     func fault()
     func _copy(from other: any PersistentModel)
     func _jsonDataSetValue(_ value: Any?, forPropertyName propertyName: String)
+    func _jsonDataRemoveValue(_ value: Any, forPropertyName propertyName: String)
     var _isSyncingInverse: Bool { get set }
     init()
 }
@@ -250,43 +251,69 @@ public struct Field<Value> {
                     
                     if !instance._isSyncingInverse,
                        let schemaType = type(of: instance) as? any _JsonDataSchemaProviding.Type,
-                       let propName = schemaType._jsonDataPropertyName(for: wrappedKeyPath),
-                       let rel = schemaType._jsonDataRelationships.first(where: { $0.propertyName == propName }),
-                       let inverseName = rel.inverseName {
+                       let propName = schemaType._jsonDataPropertyName(for: wrappedKeyPath) {
                         
-                        // Set flag to prevent infinite recursion
-                        instance._isSyncingInverse = true
-                        defer { instance._isSyncingInverse = false }
-                        
-                        // Clear old inverse
-                        if let oldObj = oldValue as? any PersistentModel {
-                            oldObj._isSyncingInverse = true
-                            oldObj._jsonDataSetValue(nil, forPropertyName: inverseName)
-                            oldObj._isSyncingInverse = false
-                        } else if let oldArr = oldValue as? [any PersistentModel] {
-                            for oldObj in oldArr {
+                        // Forward path: this property declares @Relationship(inverse:)
+                        if let rel = schemaType._jsonDataRelationships.first(where: { $0.propertyName == propName }),
+                           let inverseName = rel.inverseName {
+                            instance._isSyncingInverse = true
+                            defer { instance._isSyncingInverse = false }
+                            
+                            // Clear old inverse (to-many: remove element; to-one: nil)
+                            if let oldObj = oldValue as? any PersistentModel {
                                 oldObj._isSyncingInverse = true
-                                oldObj._jsonDataSetValue(nil, forPropertyName: inverseName)
+                                oldObj._jsonDataRemoveValue(instance, forPropertyName: inverseName)
                                 oldObj._isSyncingInverse = false
+                            } else if let oldArr = oldValue as? [any PersistentModel] {
+                                for oldObj in oldArr {
+                                    oldObj._isSyncingInverse = true
+                                    oldObj._jsonDataRemoveValue(instance, forPropertyName: inverseName)
+                                    oldObj._isSyncingInverse = false
+                                }
                             }
-                        }
-                        
-                        // Set new inverse
-                        if let newObj = newValue as? any PersistentModel {
-                            newObj._isSyncingInverse = true
-                            // For to-one, we set instance. For to-many, we'd append instance.
-                            // But since _jsonDataSetValue does a direct assignment, we must pass the correct type.
-                            // However, we don't know the exact array type dynamically.
-                            // If the inverse is an array, setting it directly to `instance` will fail the `as? Type` cast.
-                            // To perfectly support bidirectional to-many, _jsonDataSetValue would need `append` logic.
-                            // For now, we attempt to assign directly (works for to-one).
-                            newObj._jsonDataSetValue(instance, forPropertyName: inverseName)
-                            newObj._isSyncingInverse = false
-                        } else if let newArr = newValue as? [any PersistentModel] {
-                            for newObj in newArr {
+                            
+                            // Set new inverse (to-many appends with dedupe; to-one assigns)
+                            if let newObj = newValue as? any PersistentModel {
                                 newObj._isSyncingInverse = true
                                 newObj._jsonDataSetValue(instance, forPropertyName: inverseName)
                                 newObj._isSyncingInverse = false
+                            } else if let newArr = newValue as? [any PersistentModel] {
+                                for newObj in newArr {
+                                    newObj._isSyncingInverse = true
+                                    newObj._jsonDataSetValue(instance, forPropertyName: inverseName)
+                                    newObj._isSyncingInverse = false
+                                }
+                            }
+                        }
+                        // Reverse path: only the other side declares @Relationship(inverse: thisProperty)
+                        else if schemaType._jsonDataRelationships.first(where: { $0.propertyName == propName }) == nil {
+                            func peerRelationship(
+                                on peer: any PersistentModel
+                            ) -> (peer: any PersistentModel, propertyName: String)? {
+                                guard let peerSchema = type(of: peer) as? any _JsonDataSchemaProviding.Type else {
+                                    return nil
+                                }
+                                guard let match = peerSchema._jsonDataRelationships.first(where: { $0.inverseName == propName }) else {
+                                    return nil
+                                }
+                                return (peer, match.propertyName)
+                            }
+                            
+                            instance._isSyncingInverse = true
+                            defer { instance._isSyncingInverse = false }
+                            
+                            if let oldObj = oldValue as? any PersistentModel,
+                               let (peer, peerProp) = peerRelationship(on: oldObj) {
+                                peer._isSyncingInverse = true
+                                peer._jsonDataRemoveValue(instance, forPropertyName: peerProp)
+                                peer._isSyncingInverse = false
+                            }
+                            
+                            if let newObj = newValue as? any PersistentModel,
+                               let (peer, peerProp) = peerRelationship(on: newObj) {
+                                peer._isSyncingInverse = true
+                                peer._jsonDataSetValue(instance, forPropertyName: peerProp)
+                                peer._isSyncingInverse = false
                             }
                         }
                     }

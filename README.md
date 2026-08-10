@@ -1,22 +1,24 @@
 # JsonData
 
-**JsonData** 是一个专为 Swift 跨平台生态设计的数据持久化框架。它提供了与 Apple **SwiftData** 完全一致的心智模型和 API，但在底层由久经考验的 [GRDB](https://github.com/groue/GRDB.swift) 强力驱动，支持 **Linux**、**Windows** 跨平台。
+> **English** | [简体中文](README.zh-CN.md)
 
-无论是服务端的重度并发查询，还是跨平台客户端的响应式 UI，JsonData 都能为您提供如同 SwiftData 一样丝滑优雅的开发体验。
+**JsonData** is a data persistence framework designed for the Swift cross-platform ecosystem. It offers a mental model and API that are fully consistent with Apple's **SwiftData**, but under the hood it is powered by the battle-tested [GRDB](https://github.com/groue/GRDB.swift), and it supports **Linux** and **Windows**.
 
-> **关于命名**：为什么叫 JsonData 这么一个奇怪的名字？翻翻 Git 提交记录就知道了——这个库最初确实是用 JSON 文件来做持久化的。后来发现性能实在太差了，所以就切换到了 GRDB，但名字嘛……改起来牵一发而动全身，索性就这样了。
+Whether you need heavy concurrent queries on the server side or a responsive UI on cross-platform clients, JsonData delivers a SwiftData-like, silky-smooth development experience.
+
+> **About the name**: Why such an odd name, "JsonData"? Check the git commit history — this library originally persisted data using JSON files. The performance turned out to be too poor, so it switched to GRDB, but the name... well, changing it would ripple through everything, so it stuck.
 
 ---
 
-## 核心特性
+## Core Features
 
-- **默认回退SwiftData**: 在 macOS、iOS 上，`import JsonData` 等价于 `import SwiftData`，在其他平台是自动切换为 GRDB 实现的 JsonData。
-- **SwiftData API 对齐**：`@Model`、`ModelContext` 与 `ModelContainer` 与 SwiftData 一致；View 用的 `@Query` 由 UI 层提供（SwiftUI / SwiftTUI），显式 `context:` 版在独立产品 `JsonData_Query` 中。
-- **GRDB**：底层使用 SQLite ，这基本与 SwiftData 后端一致。
+- **Falls back to SwiftData by default**: on macOS and iOS, `import JsonData` is equivalent to `import SwiftData`; on other platforms it automatically switches to the GRDB-backed JsonData implementation.
+- **SwiftData API parity**: `@Model`, `ModelContext`, and `ModelContainer` match SwiftData; the View-side `@Query` is provided by the UI layer (SwiftUI / SwiftTUI), while the explicit `context:` variant lives in the standalone product `JsonData_Query`.
+- **GRDB**: The underlying engine is SQLite, which is essentially the same backend SwiftData uses.
 
-## 安装 (Swift Package Manager)
+## Installation (Swift Package Manager)
 
-在项目的 `Package.swift` 中添加以下依赖：
+Add the following dependency to your project's `Package.swift`:
 
 ```swift
 dependencies: [
@@ -24,27 +26,27 @@ dependencies: [
 ]
 ```
 
-将所需产品添加到对应 Target 的依赖中：
+Add the desired product to the corresponding target's dependencies:
 
 ```swift
 targets: [
     .target(
         name: "YourApp",
         dependencies: [
-            "JsonData", // Apple 上为 SwiftData；其他平台为 JsonDataCore。若想在 Apple 上强制 GRDB，请改依赖 JsonDataCore。
-            // "JsonData_Query", // 仅当需要显式 context 版 @Query（非 SwiftUI/SwiftTUI）时再加
+            "JsonData", // SwiftData on Apple platforms; JsonDataCore elsewhere. To force GRDB on Apple, depend on JsonDataCore instead.
+            // "JsonData_Query", // Only needed when you require the explicit-context @Query (non-SwiftUI/SwiftTUI)
         ]
     )
 ]
 ```
 
-## 快速上手
+## Quick Start
 
-### 1. 定义你的数据模型
-使用与 SwiftData 完全一样的 `@Model` 宏，无需繁琐的数据库建表语句：
+### 1. Define Your Data Model
+Use the `@Model` macro exactly as you would with SwiftData — no tedious database schema statements required:
 
 ```swift
-import JsonData // 只有这里有差异！！
+import JsonData // This is the only difference!!
 
 @Model
 public final class TodoItem {
@@ -62,47 +64,47 @@ public final class TodoItem {
 }
 ```
 
-### 2. 配置与初始化容器
-在应用启动时（或 SwiftUI 的入口处）初始化你的数据容器：
+### 2. Configure and Initialize a Container
+Initialize your data container at app launch (or at the SwiftUI entry point):
 
-> 我非常推荐使用全局变量。
+> I highly recommend using a global variable.
 
 ```swift
-// 创建内存数据库（测试用）或持久化 SQLite 数据库
+// Create an in-memory database (for testing) or a persistent SQLite database
 let container = try ModelContainer(for: TodoItem.self)
 let context = ModelContext(container)
 ```
 
-### 3. 数据增删改查
-类型安全的 `Predicate` 查询机制：
+### 3. CRUD Operations
+Type-safe `Predicate` query mechanism:
 
 ```swift
-// 插入新数据
+// Insert new data
 let newItem = TodoItem(title: "Learn JsonData")
 context.insert(newItem)
 try? context.save()
 
-// 查询数据
+// Query data
 let descriptor = FetchDescriptor<TodoItem>(
-    predicate: #Predicate { $0.isCompleted == false }, // 基本一致，但是支持的没有 SwiftData 用的 Foundation 的 Predicate 全面，JsonDataCore 的 Predicate 是内部重新实现的。
+    predicate: #Predicate { $0.isCompleted == false }, // Mostly the same, but not as comprehensive as Foundation's Predicate used by SwiftData; JsonDataCore's Predicate is a self-contained reimplementation.
     sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
 )
 
 let pendingTodos = try context.fetch(descriptor)
 ```
 
-### 4. 响应式查询（分层，对齐 SwiftData / SwiftUI）
+### 4. Reactive Queries (Layered, Aligned with SwiftData / SwiftUI)
 
-持久化核心（`JsonData` / `JsonDataCore`）**不**自带 View 用的 `@Query`，与 Apple 的分层一致：`@Query` 出现在 UI 集成层。
+The persistence core (`JsonData` / `JsonDataCore`) does **not** ship with the View-side `@Query`, matching Apple's layering: `@Query` lives in the UI integration layer.
 
-| 场景 | Import | `@Query` |
-|------|--------|----------|
-| 只做持久化 | `import JsonData` | 无 |
-| SwiftUI（Apple） | `import SwiftUI` + `import JsonData` | 系统 `_SwiftData_SwiftUI` 的环境注入版 |
-| SwiftTUI | `import SwiftTUI` | SwiftTUI 的环境注入版（已 re-export JsonData） |
-| 无 UI / 显式 context | `import JsonData` + `import JsonData_Query` | `init(filter:sort:context:)` |
+| Scenario | Import | `@Query` |
+|----------|--------|----------|
+| Persistence only | `import JsonData` | None |
+| SwiftUI (Apple) | `import SwiftUI` + `import JsonData` | System `_SwiftData_SwiftUI` environment-injected version |
+| SwiftTUI | `import SwiftTUI` | SwiftTUI's environment-injected version (re-exports JsonData) |
+| No UI / explicit context | `import JsonData` + `import JsonData_Query` | `init(filter:sort:context:)` |
 
-**SwiftUI 示例：**
+**SwiftUI example:**
 
 ```swift
 import SwiftUI
@@ -122,7 +124,7 @@ struct TodoListView: View {
 }
 ```
 
-**非 UI（显式传入 context）需要额外依赖 `JsonData_Query`：**
+**Non-UI (explicit context) requires the extra `JsonData_Query` dependency:**
 
 ```swift
 // Package.swift
@@ -131,7 +133,7 @@ dependencies: [
     .product(name: "JsonData_Query", package: "JsonData"),
 ]
 
-// 源码
+// Source
 import JsonData
 import JsonData_Query
 
@@ -141,46 +143,19 @@ struct Worker {
 }
 ```
 
-不要在同一文件同时使用 `JsonData_Query` 与 SwiftTUI/SwiftUI 的 `@Query`，否则会模块撞名。
+Do not use `JsonData_Query` together with SwiftTUI/SwiftUI's `@Query` in the same file, or the modules will collide.
 
-### Windows 构建要求
+## Contributing
+We welcome your code contributions and suggestions! Before submitting, please read our [Contributing Guide (CONTRIBUTING.md)](CONTRIBUTING.md).
 
-JsonDataCore 在 Linux / Windows 上通过 GRDB 的 `ValueObservation` 实现查询的响应式更新（`QueryState` / `JsonData_Query`）。GRDB 在 Windows 上默认启用 `SQLITE_ENABLE_SNAPSHOT`，因此消费方必须自行编译并链接带 snapshot 支持的 SQLite，而不能使用未启用该选项的预编译库。
+## License
+This project is licensed under **MPL-2.0 (Mozilla Public License 2.0)**.
 
-编译 SQLite amalgamation 时需启用以下选项（与 GRDB 默认一致）：
+This means:
+- **You are free to** use this framework in your commercial, closed-source projects (no need to open-source your App).
+- **But if you directly modify this framework's source code**, you must open-source those modifications back to the community under MPL-2.0. We encourage everyone to help make JsonData better together!
 
-- `-DSQLITE_ENABLE_SNAPSHOT` — 提供 `sqlite3_snapshot_*` 符号，满足 ValueObservation
-- `-DSQLITE_ENABLE_FTS5` — 全文检索支持
-
-链接时通过 Swift Package Manager 传入头文件与库路径，例如：
-
-```powershell
-swift build -c release `
-  -Xcc -I"path/to/prebuilt_sqlite/windows_x64" `
-  -Xlinker -L"path/to/prebuilt_sqlite/windows_x64" `
-  -Xlinker sqlite3.lib
-```
-
-MSVC 编译示例：
-
-```powershell
-cl.exe /c /O2 /DSQLITE_ENABLE_SNAPSHOT /DSQLITE_ENABLE_FTS5 sqlite3.c
-lib.exe /OUT:sqlite3.lib sqlite3.obj
-```
-
-更多细节见 GRDB 官方文档 [CustomSQLiteBuilds.md](https://github.com/groue/GRDB.swift/blob/master/Documentation/CustomSQLiteBuilds.md)。
-
-## 参与贡献
-我们非常欢迎你为 JsonData 提交代码或提出宝贵建议！在提交代码前，请务必阅读我们的 [贡献指南 (CONTRIBUTING.md)](CONTRIBUTING.md)。
-
-## 开源协议
-本项目采用 **MPL-2.0 (Mozilla Public License 2.0)** 协议开源。
-
-这意味着：
-- **您可以自由地**将本框架用于您的商业闭源项目中（无需将您的 App 开源）。
-- **但如果您直接修改了本框架的源码**，您必须将这些针对本框架的修改以 MPL-2.0 协议开源回馈给社区。我们鼓励大家共同将 JsonData 维护得更好！
-
-## 获赞历史
+## Star History
 
 <a href="https://star-history.com/#zxss702/JsonData">
   <picture>

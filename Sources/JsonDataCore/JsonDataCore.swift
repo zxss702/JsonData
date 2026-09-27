@@ -47,7 +47,7 @@ public struct Schema: @unchecked Sendable {
 
 /// 声明模型属性的元数据选项，如唯一性、外部存储等。
 @attached(peer)
-public macro Attribute(_ options: Schema.Attribute.Option...) = #externalMacro(module: "JsonDataMacros", type: "AttributeMacro")
+public macro Attribute(_ options: Schema.Attribute.Option..., originalName: String? = nil) = #externalMacro(module: "JsonDataMacros", type: "AttributeMacro")
 
 /// 声明模型间的关系，可指定删除规则与逆向 keyPath，用于自动维护双向关系的完整性。
 @attached(peer)

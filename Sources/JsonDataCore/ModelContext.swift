@@ -372,7 +372,7 @@ public final class ModelContext: @unchecked Sendable {
         for column in cols {
             columns.append(column.columnName)
             placeholders.append("?")
-            let rawValue = columnValues[column.columnName] ?? nil
+            let rawValue = columnValues[column.propertyName] ?? nil
             arguments.append(_databaseArgument(for: rawValue))
         }
         
@@ -1008,15 +1008,15 @@ public final class ModelContext: @unchecked Sendable {
         for col in columns {
             switch col.kind {
             case .string, .uuid, .codableJSON, .url:
-                values[col.columnName] = row[col.columnName] as String?
+                values[col.propertyName] = row[col.columnName] as String?
             case .integer:
-                values[col.columnName] = row[col.columnName] as Int64?
+                values[col.propertyName] = row[col.columnName] as Int64?
             case .double, .date:
-                values[col.columnName] = row[col.columnName] as Double?
+                values[col.propertyName] = row[col.columnName] as Double?
             case .bool:
-                values[col.columnName] = row[col.columnName] as Int64?
+                values[col.propertyName] = row[col.columnName] as Int64?
             case .data:
-                values[col.columnName] = row[col.columnName] as Data?
+                values[col.propertyName] = row[col.columnName] as Data?
             }
         }
         

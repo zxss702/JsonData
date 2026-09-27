@@ -19,6 +19,7 @@ private struct PersistentStoredProperty {
     let attributeOptions: [String]
     let relationshipInfo: RelationshipInfo?
     let initializerExpr: String?
+    let originalName: String?
 
     struct RelationshipInfo {
         let deleteRule: String
@@ -106,6 +107,7 @@ private extension VariableDeclSyntax {
 
             var attributeOptions: [String] = []
             var relationshipInfo: PersistentStoredProperty.RelationshipInfo? = nil
+            var originalName: String? = nil
 
             for element in attributes {
                 guard let attribute = element.attributeSyntax else { continue }
@@ -118,6 +120,10 @@ private extension VariableDeclSyntax {
                             if expr.hasSuffix(".externalStorage") || expr == "externalStorage" { attributeOptions.append(".externalStorage") }
                             if expr.hasSuffix(".ephemeral") || expr == "ephemeral" { attributeOptions.append(".ephemeral") }
                             if expr.hasSuffix(".transformable") || expr == "transformable" { attributeOptions.append(".transformable") }
+                            if arg.label?.text == "originalName",
+                               let segment = arg.expression.as(StringLiteralExprSyntax.self)?.segments.first?.as(StringSegmentSyntax.self) {
+                                originalName = segment.content.text
+                            }
                         }
                     }
                 } else if attrName == "Relationship" || attrName.hasSuffix(".Relationship") {
@@ -153,7 +159,8 @@ private extension VariableDeclSyntax {
                     isOptional: isOptional,
                     attributeOptions: attributeOptions,
                     relationshipInfo: relationshipInfo,
-                    initializerExpr: binding.initializer?.value.trimmedDescription
+                    initializerExpr: binding.initializer?.value.trimmedDescription,
+                    originalName: originalName
                 )
             )
         }
@@ -221,7 +228,7 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
             let columnEntries = persistentVariables.map { variable in
                 let optionsArray = variable.attributeOptions.isEmpty ? "" : ", options: [\(variable.attributeOptions.joined(separator: ", "))]"
                 let kind = variable.attributeOptions.contains(where: { $0.contains(".externalStorage") }) ? "_JsonDataColumnKind.string" : variable.columnKind
-                return "_JsonDataColumnInfo(propertyName: \"\(variable.name)\", columnName: \"\(variable.name)\", kind: \(kind), isOptional: \(variable.isOptional)\(optionsArray))"
+                return "_JsonDataColumnInfo(propertyName: \"\(variable.name)\", columnName: \"\(variable.originalName ?? variable.name)\", kind: \(kind), isOptional: \(variable.isOptional)\(optionsArray))"
             }.joined(separator: ",\n")
             let columnsDecl: String
             if columnEntries.isEmpty {

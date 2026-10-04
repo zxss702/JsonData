@@ -823,7 +823,11 @@ public final class ModelContext: @unchecked Sendable {
             onError: { err in boxedOnError.closure(err) },
             onChange: { box in
                 Task { @MainActor in
-                    boxedOnChange.closure(box.value)
+                    var items = box.value
+                    if let filter = descriptor.predicate?.memoryFilter {
+                        items.removeAll { !filter($0) }
+                    }
+                    boxedOnChange.closure(items)
                 }
             }
         )

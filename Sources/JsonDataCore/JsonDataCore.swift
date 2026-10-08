@@ -66,7 +66,7 @@ public macro Index<T>(_ groups: [PartialKeyPath<T>]...) = #externalMacro(module:
 public macro Unique<T>(_ groups: [PartialKeyPath<T>]...) = #externalMacro(module: "JsonDataMacros", type: "UniqueMacro")
 
 /// 数据模型的基础协议，所有持久化模型均需遵循。提供 Fault、变更追踪、逆关系同步及标识符等核心能力。
-public protocol PersistentModel: AnyObject, Observable, Hashable, Equatable, Identifiable {
+public protocol PersistentModel: AnyObject, Observable, Hashable, Equatable, Identifiable, SendableMetatype {
     var persistentModelID: PersistentIdentifier { get set }
     var modelContext: ModelContext? { get }
     var _modelContext: ModelContext? { get set }

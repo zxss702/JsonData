@@ -187,7 +187,7 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
         in context: some MacroExpansionContext
     ) throws -> [ExtensionDeclSyntax] {
         let decl: DeclSyntax = """
-        extension \(type.trimmed): PersistentModel, _JsonDataSchemaProviding {}
+        extension \(type.trimmed): nonisolated PersistentModel, _JsonDataSchemaProviding {}
         """
         guard let extensionDecl = decl.as(ExtensionDeclSyntax.self) else {
             return []

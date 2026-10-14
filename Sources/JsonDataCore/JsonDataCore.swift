@@ -239,6 +239,15 @@ extension URL: _DefaultFieldProtocol {
     public static var _defaultFieldValue: Any { URL(fileURLWithPath: "/") }
 }
 
+private func sameFieldValue<Value>(_ left: Value, _ right: Value) -> Bool {
+    guard let left = left as? any Equatable else { return false }
+    func compare<T: Equatable>(_ left: T) -> Bool {
+        guard let right = right as? T else { return false }
+        return left == right
+    }
+    return compare(left)
+}
+
 /// 用于 ``PersistentModel`` 的属性包装器，提供惰性加载与变更追踪能力，支持可选值、默认值及逆关系同步。
 @propertyWrapper
 public struct Field<Value> {
@@ -283,9 +292,10 @@ public struct Field<Value> {
             fatalError("Field<\(Value.self)> has no value and no default")
         }
         set {
+            instance.fault()
+            let field = instance[keyPath: storageKeyPath]
+            if let current = field.value ?? field.defaultValue, sameFieldValue(current, newValue) { return }
             instance.withMutation(keyPath: wrappedKeyPath) {
-                instance.fault()
-                
                 let oldValue = instance[keyPath: storageKeyPath].value
                 instance[keyPath: storageKeyPath].value = newValue
                 

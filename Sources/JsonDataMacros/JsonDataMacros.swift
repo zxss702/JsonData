@@ -717,7 +717,7 @@ public struct PredicateMacro: ExpressionMacro {
         
         let argsString = parsed.arguments.map { "\($0)" }.joined(separator: ", ")
         let joinConditionsCode = parsed.joinConditions.map { jc in
-            "JsonDataCore.JoinCondition(localColumn: \"\(jc.localColumn)\", targetColumn: \"\(jc.targetColumn)\", op: \"\(jc.op)\", argument: \(jc.argument))"
+            "JsonDataCore.JoinCondition(localColumn: \"\(jc.localColumn)\", targetColumn: \"\(jc.targetColumn)\", op: \"\(jc.op)\", argument: (\(jc.argument)) as Any)"
         }.joined(separator: ", ")
         
         return "JsonDataCore.Predicate(sql: \"\(raw: parsed.sql)\", arguments: [\(raw: argsString)], joinConditions: [\(raw: joinConditionsCode)], memoryFilter: \(closure))"

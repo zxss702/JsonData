@@ -44,6 +44,17 @@ private final class WeakContextRef: @unchecked Sendable {
 
 private let globalContextsLock = Mutex([WeakContextRef]())
 
+/// Database snapshots are read off-thread; live UI models are merged on MainActor.
+@MainActor
+private final class ObservedRows {
+    var rows: [PersistentIdentifier: Row] = [:]
+}
+
+private struct ObservedSnapshot: @unchecked Sendable {
+    let revision: Int
+    let rows: [Row]
+}
+
 @_cdecl("_JsonDataCore_PerformExitAutosave")
 func _JsonDataCore_PerformExitAutosave() {
     globalContextsLock.withLock { contexts in
@@ -82,6 +93,10 @@ public final class ModelContext: @unchecked Sendable {
     internal var insertedModels: [PersistentIdentifier: any PersistentModel] = [:]
     internal var changedModels: [PersistentIdentifier: any PersistentModel] = [:]
     internal var deletedModels: [PersistentIdentifier: any PersistentModel] = [:]
+    private var savingModels: [PersistentIdentifier: (model: any PersistentModel, count: Int)] = [:]
+    private var savingDeletions: [PersistentIdentifier: Int] = [:]
+    private let observationRevision = Mutex(0)
+    private var observedModelRevisions: [PersistentIdentifier: Int] = [:]
     /// `_bootstrapSchema` 注册的模型类型，供非泛型 `model(for:)` 扫描加载。
     internal var schemaTypes: [any PersistentModel.Type] = []
     
@@ -203,6 +218,7 @@ public final class ModelContext: @unchecked Sendable {
     // @contributor
     private func _purgeStaleEntries() {
         identityMap = identityMap.filter { $0.value.value != nil }
+        observedModelRevisions = observedModelRevisions.filter { identityMap[$0.key] != nil }
     }
 
     // @contributor
@@ -391,6 +407,11 @@ public final class ModelContext: @unchecked Sendable {
             insertedModels.removeAll()
             changedModels.removeAll()
             deletedModels.removeAll()
+            for model in inserts + updates + deletes {
+                let id = model.persistentModelID
+                savingModels[id] = (model, (savingModels[id]?.count ?? 0) + 1)
+            }
+            for model in deletes { savingDeletions[model.persistentModelID, default: 0] += 1 }
             return (inserts, updates, deletes)
         }
         
@@ -398,33 +419,63 @@ public final class ModelContext: @unchecked Sendable {
             return
         }
         
-        try databaseQueue.write { db in
-            for model in toDelete {
-                let modelType = type(of: model)
-                try _ensureTable(for: modelType, in: db)
-                
-                if let schemaType = modelType as? any _JsonDataSchemaProviding.Type {
-                    let extDir = baseURL.appendingPathComponent(".externalStorage")
-                    for column in schemaType._jsonDataColumns where column.options.contains(.externalStorage) {
-                        let filename = "\(model.persistentModelID.id)_\(column.propertyName).dat"
-                        let fileUrl = extDir.appendingPathComponent(filename)
-                        try? FileManager.default.removeItem(at: fileUrl)
-                    }
+        defer {
+            identityMapLock.withLock { _ in
+                for model in toInsert + toUpdate + toDelete {
+                    let id = model.persistentModelID
+                    if let saving = savingModels[id], saving.count > 1 {
+                        savingModels[id] = (saving.model, saving.count - 1)
+                    } else { savingModels[id] = nil }
                 }
+                for model in toDelete {
+                    let id = model.persistentModelID
+                    if let count = savingDeletions[id], count > 1 { savingDeletions[id] = count - 1 }
+                    else { savingDeletions[id] = nil }
+                }
+            }
+        }
+        do {
+            try databaseQueue.write { db in
+                for model in toDelete {
+                    let modelType = type(of: model)
+                    try _ensureTable(for: modelType, in: db)
                 
-                try db.execute(
-                    sql: "DELETE FROM \(_quote(identifier: _tableName(for: modelType))) WHERE _id = ?",
-                    arguments: [model.persistentModelID.id]
-                )
-            }
+                    if let schemaType = modelType as? any _JsonDataSchemaProviding.Type {
+                        let extDir = baseURL.appendingPathComponent(".externalStorage")
+                        for column in schemaType._jsonDataColumns where column.options.contains(.externalStorage) {
+                            let filename = "\(model.persistentModelID.id)_\(column.propertyName).dat"
+                            let fileUrl = extDir.appendingPathComponent(filename)
+                            try? FileManager.default.removeItem(at: fileUrl)
+                        }
+                    }
+                
+                    try db.execute(
+                        sql: "DELETE FROM \(_quote(identifier: _tableName(for: modelType))) WHERE _id = ?",
+                        arguments: [model.persistentModelID.id]
+                    )
+                }
             
-            for model in toInsert {
-                try _saveModel(model, in: db)
-            }
+                for model in toInsert {
+                    try _saveModel(model, in: db)
+                }
             
-            for model in toUpdate {
-                try _saveModel(model, in: db)
+                for model in toUpdate {
+                    try _saveModel(model, in: db)
+                }
             }
+        } catch {
+            identityMapLock.withLock { _ in
+                for model in toInsert where deletedModels[model.persistentModelID] == nil {
+                    if insertedModels[model.persistentModelID] == nil { insertedModels[model.persistentModelID] = model }
+                }
+                for model in toUpdate where deletedModels[model.persistentModelID] == nil {
+                    if changedModels[model.persistentModelID] == nil { changedModels[model.persistentModelID] = model }
+                }
+                for model in toDelete where insertedModels[model.persistentModelID] == nil {
+                    if deletedModels[model.persistentModelID] == nil { deletedModels[model.persistentModelID] = model }
+                }
+            }
+            throw error
         }
         _postContextDidChange()
     }
@@ -807,6 +858,103 @@ public final class ModelContext: @unchecked Sendable {
         public init(_ closure: C) { self.closure = closure }
     }
 
+    private func observeRows<T: PersistentModel>(
+        _ descriptor: FetchDescriptor<T>
+    ) -> ValueObservation<ValueReducers.Fetch<ObservedSnapshot>> {
+        let tableName = _tableName(for: T.self)
+        try? _ensureTable(for: T.self)
+        return ValueObservation.tracking { db in
+            let query = try self._buildFetchQuery(
+                for: T.self, descriptor: descriptor, limit: descriptor.fetchLimit, tableName: tableName)
+            let rows = try Row.fetchAll(db, sql: query.sql, arguments: query.arguments)
+            // Every observation of this context fetches on the same database queue.
+            // Its revision also orders snapshots from overlapping queries.
+            let revision = self.observationRevision.withLock { $0 += 1; return $0 }
+            return ObservedSnapshot(revision: revision, rows: rows)
+        }
+    }
+
+    /// Preserves identities and pending edits while merging changed database rows.
+    @MainActor
+    private func mergeObservedRows<T: PersistentModel>(
+        _ snapshot: ObservedSnapshot, descriptor: FetchDescriptor<T>, previous: ObservedRows
+    ) -> [T] {
+        let columns = _columns(for: T.self)
+        let pending = identityMapLock.withLock { _ in
+            let editing = changedModels.merging(savingModels.mapValues(\.model)) { edited, _ in edited }
+            return (insertedModels, editing, Set(deletedModels.keys).union(savingDeletions.keys))
+        }
+        var results: [T] = []
+        var seen: Set<PersistentIdentifier> = []
+        for row in snapshot.rows {
+            let id = PersistentIdentifier(id: row["_id"] as String)
+            seen.insert(id)
+            guard !pending.2.contains(id) else { continue }
+            let known = identityMapLock.withLock { _ in
+                (identityMap[id]?.value as? T, observedModelRevisions[id] ?? 0)
+            }
+            let cached = known.0
+            if let local = (pending.0[id] ?? pending.1[id]) as? T {
+                results.append(local)
+                // Retry after the local edit commits; this snapshot did not land.
+                previous.rows[id] = nil
+                continue
+            }
+            if let cached, snapshot.revision < known.1 {
+                // Another query has already merged a newer snapshot of this model.
+                results.append(cached)
+                previous.rows[id] = nil
+                continue
+            }
+            if let cached, !cached._isFault, previous.rows[id] == row {
+                identityMapLock.withLock { _ in observedModelRevisions[id] = snapshot.revision }
+                results.append(cached)
+                continue
+            }
+
+            let decoded = T()
+            decoded.persistentModelID = id
+            (decoded as? any _JsonDataSchemaProviding)?._populateFromColumnValues(
+                _rowToValues(row, columns: columns), context: self)
+            decoded._isFault = false
+            let model: T
+            if let cached {
+                // Field setters notify Observation, but loading must not autosave
+                // the snapshot or modify inverse relationships as a local edit.
+                cached._isFaulting = true
+                cached._isFault = false
+                cached._copy(from: decoded)
+                cached._isFaulting = false
+                model = cached
+            } else {
+                model = decoded
+                identityMapLock.withLock { _ in identityMap[id] = WeakRef(model) }
+            }
+            model._modelContext = self
+            identityMapLock.withLock { _ in observedModelRevisions[id] = snapshot.revision }
+            previous.rows[id] = row
+            results.append(model)
+        }
+        previous.rows = previous.rows.filter { seen.contains($0.key) }
+        if descriptor.includePendingChanges {
+            for (id, model) in pending.0 where !seen.contains(id) && !pending.2.contains(id) {
+                if let model = model as? T { results.append(model) }
+            }
+        }
+        if let filter = descriptor.predicate?.memoryFilter { results.removeAll { !filter($0) } }
+        if !descriptor.sortBy.isEmpty {
+            results.sort { a, b in
+                for order in descriptor.sortBy {
+                    if order.areInIncreasingOrder(a, b) { return true }
+                    if order.areInIncreasingOrder(b, a) { return false }
+                }
+                return false
+            }
+        }
+        if let limit = descriptor.fetchLimit { results = Array(results.prefix(limit)) }
+        return results
+    }
+
     /// 在主线程启动数据观察，当查询结果变化时回调 `onChange`。
     @MainActor
     public func startObservation<T: PersistentModel>(
@@ -814,21 +962,20 @@ public final class ModelContext: @unchecked Sendable {
         onError: @escaping (Error) -> Void = { _ in },
         onChange: @MainActor @escaping ([T]) -> Void
     ) -> DatabaseCancellable {
-        let obs = observe(descriptor)
+        let obs = observeRows(descriptor)
+        let previous = ObservedRows()
         let boxedOnChange = UncheckedSendableClosure(onChange)
         let boxedOnError = UncheckedSendableClosure(onError)
         
         return obs.start(
             in: databaseQueue,
-            onError: { err in boxedOnError.closure(err) },
-            onChange: { box in
-                Task { @MainActor in
-                    var items = box.value
-                    if let filter = descriptor.predicate?.memoryFilter {
-                        items.removeAll { !filter($0) }
-                    }
-                    boxedOnChange.closure(items)
-                }
+            scheduling: .mainActor,
+            onError: { @MainActor err in boxedOnError.closure(err) },
+            onChange: { @MainActor box in
+                // The scheduler preserves commit order and checks cancellation
+                // before delivery. Another unstructured Task would lose both.
+                let items = self.mergeObservedRows(box, descriptor: descriptor, previous: previous)
+                boxedOnChange.closure(items)
             }
         )
     }

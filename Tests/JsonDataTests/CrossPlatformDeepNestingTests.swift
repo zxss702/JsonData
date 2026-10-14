@@ -72,6 +72,29 @@ private final class UserWithComplexStruct {
 }
 
 final class CrossPlatformDeepNestingTests: XCTestCase {
+
+    func testOptionalRelationshipPredicateArgumentsRemainBoxed() throws {
+        let selectedIDs: [String?] = [nil, "gp1"]
+        for selectedID in selectedIDs {
+            let predicate: JsonDataCore.Predicate<Parent> = #Predicate<Parent> {
+                $0.grandparent?.id == selectedID
+            }
+            let condition = try XCTUnwrap(predicate.joinConditions.first)
+            XCTAssertEqual(predicate.joinConditions.count, 1)
+            XCTAssertEqual(condition.localColumn, "grandparent")
+            XCTAssertEqual(condition.targetColumn, "id")
+            let boxed = Mirror(reflecting: condition.argument)
+            XCTAssertTrue(boxed.displayStyle == .optional)
+            XCTAssertEqual(boxed.children.count, selectedID == nil ? 0 : 1)
+            XCTAssertEqual(condition.argument as? String, selectedID)
+
+            let parent = Parent(id: "p1", name: "Parent")
+            if let selectedID {
+                parent.grandparent = Grandparent(id: selectedID, name: "Grandparent")
+            }
+            XCTAssertEqual(predicate.memoryFilter?(parent), true)
+        }
+    }
     
     func testDeepModelCascadingDeletes() throws {
         let directory = try makeTemporaryDirectory(prefix: "DeepNesting")

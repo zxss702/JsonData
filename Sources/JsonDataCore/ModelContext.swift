@@ -880,27 +880,36 @@ public final class ModelContext: @unchecked Sendable {
         _ snapshot: ObservedSnapshot, descriptor: FetchDescriptor<T>, previous: ObservedRows
     ) -> [T] {
         let columns = _columns(for: T.self)
-        let pending = identityMapLock.withLock { _ in
-            let editing = changedModels.merging(savingModels.mapValues(\.model)) { edited, _ in edited }
-            return (insertedModels, editing, Set(deletedModels.keys).union(savingDeletions.keys))
+        // Mutex returns a sending result. Live models remain aliased by this context, so capture
+        // the snapshot into the caller's MainActor region and return only Void from the lock.
+        var pending: (
+            inserted: [PersistentIdentifier: any PersistentModel],
+            editing: [PersistentIdentifier: any PersistentModel],
+            deleted: Set<PersistentIdentifier>
+        ) = ([:], [:], [])
+        identityMapLock.withLock { _ -> Void in
+            pending.inserted = insertedModels
+            pending.editing = changedModels.merging(savingModels.mapValues(\.model)) { edited, _ in edited }
+            pending.deleted = Set(deletedModels.keys).union(savingDeletions.keys)
         }
         var results: [T] = []
         var seen: Set<PersistentIdentifier> = []
         for row in snapshot.rows {
             let id = PersistentIdentifier(id: row["_id"] as String)
             seen.insert(id)
-            guard !pending.2.contains(id) else { continue }
-            let known = identityMapLock.withLock { _ in
-                (identityMap[id]?.value as? T, observedModelRevisions[id] ?? 0)
+            guard !pending.deleted.contains(id) else { continue }
+            var known: (model: T?, revision: Int) = (nil, 0)
+            identityMapLock.withLock { _ -> Void in
+                known = (identityMap[id]?.value as? T, observedModelRevisions[id] ?? 0)
             }
-            let cached = known.0
-            if let local = (pending.0[id] ?? pending.1[id]) as? T {
+            let cached = known.model
+            if let local = (pending.inserted[id] ?? pending.editing[id]) as? T {
                 results.append(local)
                 // Retry after the local edit commits; this snapshot did not land.
                 previous.rows[id] = nil
                 continue
             }
-            if let cached, snapshot.revision < known.1 {
+            if let cached, snapshot.revision < known.revision {
                 // Another query has already merged a newer snapshot of this model.
                 results.append(cached)
                 previous.rows[id] = nil
@@ -937,7 +946,7 @@ public final class ModelContext: @unchecked Sendable {
         }
         previous.rows = previous.rows.filter { seen.contains($0.key) }
         if descriptor.includePendingChanges {
-            for (id, model) in pending.0 where !seen.contains(id) && !pending.2.contains(id) {
+            for (id, model) in pending.inserted where !seen.contains(id) && !pending.deleted.contains(id) {
                 if let model = model as? T { results.append(model) }
             }
         }

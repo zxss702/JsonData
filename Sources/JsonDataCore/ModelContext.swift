@@ -59,7 +59,7 @@ private struct ObservedSnapshot: @unchecked Sendable {
 func _JsonDataCore_PerformExitAutosave() {
     globalContextsLock.withLock { contexts in
         for ref in contexts {
-            try? ref.context?.save()
+            ref.context?._performExitAutosave()
         }
     }
 }
@@ -125,6 +125,28 @@ public final class ModelContext: @unchecked Sendable {
         }
     }
 
+    /// 保存必须发生在主 actor 上。
+    ///
+    /// 这里不是"随便挑个线程"，理由有两条：
+    /// 1. 宿主的主队列不一定有人排空（SwiftOmniUI 的 WinUI/GTK 宿主自带 MainActor
+    ///    执行器，`DispatchQueue.main` 上的东西永远不会跑），但 `Task { @MainActor }`
+    ///    一定会在宿主下一次 pump 时执行——这是宿主唯一保证会跑的路径。
+    /// 2. 读取一直是在主 actor 上做的（`fetch` 由视图调用），把写也放在同一条线程上，
+    ///    读写就走同一条 `databaseQueue` 调用序列，不会出现"读得到、写不进去"这种
+    ///    只在某个平台上复现的错位。
+    ///
+    /// 改动本身可以来自任何线程（`_modelDidChange` 由属性 setter 调用），
+    /// 所以这里只做一次 actor 交接，等待与保存都在主 actor 内完成：
+    /// `Task.sleep` 只挂起任务、不占线程，不会卡住界面。
+    ///
+    /// 节奏上仍是"改动停下 0.1 秒后存一次，存的过程中又来的改动让它再存一次"，
+    /// 连续的改动不会把保存无限期推后。
+    ///
+    /// 注意：这条自动保存**不是**唯一保险。SwiftData 自己的自动保存并不是一个
+    /// 定时器（实测：改动后主 run loop 空转 2 秒也不落盘，`processPendingChanges()`
+    /// 也不落盘，只有显式 `save()` 才写盘），所以生命周期节点上的显式保存
+    /// （退出时的 `_JsonDataCore_PerformExitAutosave`）同样是必须的，而且它的失败
+    /// 必须能被看见，否则数据悄悄丢掉。
     // @contributor
     internal func _scheduleAutosave() {
         guard autosaveEnabled else { return }
@@ -135,7 +157,7 @@ public final class ModelContext: @unchecked Sendable {
             return true
         }
         guard startsSaving else { return }
-        Task.detached { [weak self] in
+        Task { @MainActor [weak self] in
             while true {
                 // 等这一串改动停顿下来。这份等待每次保存只付一次，不会被后面的
                 // 改动重新开始，所以连续的改动不会把保存一直推后。
@@ -259,8 +281,31 @@ public final class ModelContext: @unchecked Sendable {
 
     // @contributor
     private func _postContextDidChange() {
-        DispatchQueue.main.async {
+        // 必须是 MainActor 交接，不能用 `DispatchQueue.main.async`：
+        // SwiftOmniUI 的宿主（WinUI/GTK）装了自带的 MainActor 执行器，
+        // 主队列没人排空，派发到主队列的通知在那些平台上永远不会发出。
+        Task { @MainActor in
             NotificationCenter.default.post(name: Self.contextDidChange, object: nil)
+        }
+    }
+
+    /// 进程退出时的最后一次保存。
+    ///
+    /// 退出路径上已经没有下一次 actor pump 了（`Task { @MainActor }` 不会执行），
+    /// 所以这里必须同步保存。但**失败必须留下痕迹**：这里过去是 `try?`，
+    /// 保存失败时数据就这么静静地丢了，而「关窗后再打开 sidebar 展开态没了」
+    /// 正是丢在这一路上——没有错误、也没有任何地方能说出原因。
+    internal func _performExitAutosave() {
+        do {
+            try save()
+            autosaveFailureLock.withLock { _ in autosaveFailure = nil }
+        } catch {
+            autosaveFailureLock.withLock { _ in autosaveFailure = error }
+            NotificationCenter.default.post(
+                name: ModelContext.autosaveDidFail,
+                object: self,
+                userInfo: ["error": error]
+            )
         }
     }
 

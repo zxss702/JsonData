@@ -1,5 +1,6 @@
 import Dispatch
 import Foundation
+import Synchronization
 
 /// A type that determines when `ValueObservation` notifies its fresh values.
 ///
@@ -241,5 +242,88 @@ extension ValueObservationScheduler where Self == DelayedMainActorValueObservati
     /// A scheduler that notifies all values on the main actor.
     public static var mainActor: DelayedMainActorValueObservationScheduler {
         DelayedMainActorValueObservationScheduler()
+    }
+}
+
+// MARK: - MainActorHopValueObservationScheduler
+
+/// A scheduler that notifies all values on the main actor, in the order
+/// `ValueObservation` scheduled them, without depending on `DispatchQueue.main`
+/// being drained.
+///
+/// ``ValueObservationScheduler/mainActor`` delivers with
+/// `DispatchQueue.main.async`, which runs only where something drains the main
+/// queue. A process that installs its own main executor - so that `MainActor`
+/// jobs run even though nothing drains that queue, as SwiftOmniUI's hosts do -
+/// would never hear an observation again after its first value. This scheduler
+/// keeps the ordering the `mainActor` scheduler promises - one action at a time,
+/// in order, on the main actor - and hands the work over with
+/// `Task { @MainActor }`, which any host that drains its own executor runs.
+public final class MainActorHopValueObservationScheduler: ValueObservationMainActorScheduler, @unchecked Sendable {
+    /// Guards `pending` and `delivering`. An action holds the lock only for as
+    /// long as it takes to read the next one out: an action may schedule
+    /// another, so none is ever run inside the lock.
+    private let stateLock = Mutex(())
+    private var pending: [@MainActor () -> Void] = []
+    private var delivering = false
+
+    public init() { }
+
+    public func immediateInitialValue() -> Bool { false }
+
+    public func scheduleOnMainActor(_ action: @escaping @MainActor () -> Void) {
+        let startsDelivery = stateLock.withLock { _ -> Bool in
+            pending.append(action)
+            guard !delivering else { return false }
+            delivering = true
+            return true
+        }
+        if startsDelivery { hop() }
+    }
+
+    private func hop() {
+        Task { @MainActor [self] in deliver() }
+    }
+
+    /// Delivers the actions waiting, in the order they were scheduled. A turn is
+    /// bounded, so an uninterrupted flow of values hands the rest to the next
+    /// turn instead of holding this one open.
+    @MainActor
+    private func deliver() {
+        for _ in 0..<1024 {
+            guard let action = take() else { return }
+            action()
+        }
+        if hasWaiting() { hop() }
+    }
+
+    /// The next action in order, clearing the delivery flag when none is left.
+    private func take() -> (@MainActor () -> Void)? {
+        stateLock.withLock { _ -> (@MainActor () -> Void)? in
+            if pending.isEmpty {
+                delivering = false
+                return nil
+            }
+            return pending.removeFirst()
+        }
+    }
+
+    /// Whether an action is waiting, clearing the delivery flag when none is.
+    private func hasWaiting() -> Bool {
+        stateLock.withLock { _ -> Bool in
+            if pending.isEmpty {
+                delivering = false
+                return false
+            }
+            return true
+        }
+    }
+}
+
+extension ValueObservationScheduler where Self == MainActorHopValueObservationScheduler {
+    /// A scheduler that notifies all values on the main actor, by a
+    /// `Task { @MainActor }` hop rather than by the main queue.
+    public static var mainActorHop: MainActorHopValueObservationScheduler {
+        MainActorHopValueObservationScheduler()
     }
 }

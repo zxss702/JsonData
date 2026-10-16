@@ -102,9 +102,22 @@ public final class ModelContext: @unchecked Sendable {
     
     /// 是否启用自动保存。默认为 `true`。
     public var autosaveEnabled: Bool = true
-    private var pendingSaveTask: Task<Void, Never>?
-    private let pendingSaveLock = Mutex(())
-    
+    /// 自动保存的调度状态：改动一到就开始一次保存，保存期间又来的改动让它
+    /// 再保存一次。取消并重启定时器的写法会让连续的改动无限期推迟保存。
+    private let autosaveLock = Mutex(())
+    private var autosaveRunning = false
+    private var autosaveDirty = false
+    private let autosaveFailureLock = Mutex(())
+    private var autosaveFailure: Error?
+
+    /// 最近一次自动保存失败的错误；保存成功时清空。
+    public var lastAutosaveError: Error? {
+        autosaveFailureLock.withLock { _ in autosaveFailure }
+    }
+
+    /// 自动保存失败时发出的通知名称，`userInfo["error"]` 是错误。
+    public static let autosaveDidFail = Notification.Name("JsonData.ModelContextAutosaveDidFail")
+
     /// 是否有未保存的更改。
     public var hasChanges: Bool {
         identityMapLock.withLock { _ in
@@ -115,17 +128,40 @@ public final class ModelContext: @unchecked Sendable {
     // @contributor
     internal func _scheduleAutosave() {
         guard autosaveEnabled else { return }
-        pendingSaveLock.withLock { _ in
-            pendingSaveTask?.cancel()
-            let task = Task.detached { [weak self] in
+        let startsSaving = autosaveLock.withLock { _ -> Bool in
+            autosaveDirty = true
+            guard !autosaveRunning else { return false }
+            autosaveRunning = true
+            return true
+        }
+        guard startsSaving else { return }
+        Task.detached { [weak self] in
+            while true {
+                // 等这一串改动停顿下来。这份等待每次保存只付一次，不会被后面的
+                // 改动重新开始，所以连续的改动不会把保存一直推后。
+                try? await Task.sleep(for: .seconds(0.1))
+                guard let self else { return }
+                self.autosaveLock.withLock { _ in self.autosaveDirty = false }
                 do {
-                    try await Task.sleep(for: .seconds(0.1))
-                    try self?.save()
+                    try self.save()
+                    self.autosaveFailureLock.withLock { _ in self.autosaveFailure = nil }
                 } catch {
-                    // Task was cancelled, do nothing
+                    // 保存失败必须留下痕迹：自动保存的错误过去被吞掉了，
+                    // 于是数据没写进去也没有任何地方说得出为什么。
+                    self.autosaveFailureLock.withLock { _ in self.autosaveFailure = error }
+                    NotificationCenter.default.post(
+                        name: ModelContext.autosaveDidFail,
+                        object: self,
+                        userInfo: ["error": error]
+                    )
                 }
+                let keepsSaving = self.autosaveLock.withLock { _ -> Bool in
+                    if self.autosaveDirty { return true }
+                    self.autosaveRunning = false
+                    return false
+                }
+                if !keepsSaving { return }
             }
-            pendingSaveTask = task
         }
     }
 
@@ -978,7 +1014,11 @@ public final class ModelContext: @unchecked Sendable {
         
         return obs.start(
             in: databaseQueue,
-            scheduling: .mainActor,
+            // `.mainActor` 用 `DispatchQueue.main.async` 投递，只有在「有人排空主队列」
+            // 的进程里才会跑；SwiftOmniUI 的宿主偏偏是「装了自己的 MainActor 执行器、
+            // 主队列没人排空」的进程，于是首个值之后观察再也不会回调。`.mainActorHop`
+            // 用 `Task { @MainActor }` 交接，同样保序，任何排空自己执行器的宿主都能跑到。
+            scheduling: .mainActorHop,
             onError: { @MainActor err in boxedOnError.closure(err) },
             onChange: { @MainActor box in
                 // The scheduler preserves commit order and checks cancellation

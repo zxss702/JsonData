@@ -92,6 +92,7 @@ public final class ModelContext: @unchecked Sendable {
     
     internal var insertedModels: [PersistentIdentifier: any PersistentModel] = [:]
     internal var changedModels: [PersistentIdentifier: any PersistentModel] = [:]
+    private var changedProperties: [PersistentIdentifier: Set<String>] = [:]
     internal var deletedModels: [PersistentIdentifier: any PersistentModel] = [:]
     private var savingModels: [PersistentIdentifier: (model: any PersistentModel, count: Int)] = [:]
     private var savingDeletions: [PersistentIdentifier: Int] = [:]
@@ -443,10 +444,17 @@ public final class ModelContext: @unchecked Sendable {
 
     /// 标记模型已发生更改，触发自动保存。由属性变更观察器调用。
     public func _modelDidChange(_ model: any PersistentModel) {
+        _modelDidChange(model, propertyName: nil)
+    }
+
+    internal func _modelDidChange(_ model: any PersistentModel, propertyName: String?) {
+        let properties = propertyName.map { Set([$0]) }
+            ?? Set(_columns(for: type(of: model)).map(\.propertyName))
         identityMapLock.withLock { _ in
             let id = model.persistentModelID
             if insertedModels[id] == nil && deletedModels[id] == nil {
                 changedModels[id] = model
+                changedProperties[id, default: []].formUnion(properties)
             }
         }
         _scheduleAutosave()
@@ -478,22 +486,48 @@ public final class ModelContext: @unchecked Sendable {
         try db.execute(sql: sql, arguments: updateArguments)
     }
 
+    // A context may hold an older copy of fields edited by another context.
+    // Update only locally modified columns; replacing the row loses those edits.
+    private func _updateModel(
+        _ model: any PersistentModel, properties: Set<String>?, in db: Database
+    ) throws {
+        let modelType = type(of: model)
+        try _ensureTable(for: modelType, in: db)
+        guard let schemaModel = model as? any _JsonDataSchemaProviding else { return }
+        let columns = _columns(for: modelType).filter {
+            properties?.contains($0.propertyName) ?? true
+        }
+        guard !columns.isEmpty else { return }
+        let values = try schemaModel._toColumnValues(context: self)
+        let assignments = columns.map { "\(_quote(identifier: $0.columnName)) = ?" }
+        var arguments: [DatabaseValueConvertible?] = columns.map {
+            _databaseArgument(for: values[$0.propertyName] ?? nil)
+        }
+        arguments.append(model.persistentModelID.id)
+        try db.execute(
+            sql: "UPDATE \(_quote(identifier: _tableName(for: modelType))) SET \(assignments.joined(separator: ", ")) WHERE _id = ?",
+            arguments: StatementArguments(arguments)
+        )
+    }
+
     /// 将所有未保存的插入、更新和删除操作写入数据库。
     public func save() throws {
-        let (toInsert, toUpdate, toDelete) = identityMapLock.withLock { _ -> ([any PersistentModel], [any PersistentModel], [any PersistentModel]) in
+        let (toInsert, toUpdate, toDelete, propertiesToUpdate) = identityMapLock.withLock { _ -> ([any PersistentModel], [any PersistentModel], [any PersistentModel], [PersistentIdentifier: Set<String>]) in
             let inserts = Array(insertedModels.values)
             let updates = Array(changedModels.values)
             let deletes = Array(deletedModels.values)
+            let properties = changedProperties
 
             insertedModels.removeAll()
             changedModels.removeAll()
+            changedProperties.removeAll()
             deletedModels.removeAll()
             for model in inserts + updates + deletes {
                 let id = model.persistentModelID
                 savingModels[id] = (model, (savingModels[id]?.count ?? 0) + 1)
             }
             for model in deletes { savingDeletions[model.persistentModelID, default: 0] += 1 }
-            return (inserts, updates, deletes)
+            return (inserts, updates, deletes, properties)
         }
         
         if toInsert.isEmpty && toUpdate.isEmpty && toDelete.isEmpty {
@@ -541,7 +575,7 @@ public final class ModelContext: @unchecked Sendable {
                 }
             
                 for model in toUpdate {
-                    try _saveModel(model, in: db)
+                    try _updateModel(model, properties: propertiesToUpdate[model.persistentModelID], in: db)
                 }
             }
         } catch {
@@ -550,7 +584,11 @@ public final class ModelContext: @unchecked Sendable {
                     if insertedModels[model.persistentModelID] == nil { insertedModels[model.persistentModelID] = model }
                 }
                 for model in toUpdate where deletedModels[model.persistentModelID] == nil {
-                    if changedModels[model.persistentModelID] == nil { changedModels[model.persistentModelID] = model }
+                    let id = model.persistentModelID
+                    if changedModels[id] == nil { changedModels[id] = model }
+                    let properties = propertiesToUpdate[id]
+                        ?? Set(_columns(for: type(of: model)).map(\.propertyName))
+                    changedProperties[id, default: []].formUnion(properties)
                 }
                 for model in toDelete where insertedModels[model.persistentModelID] == nil {
                     if deletedModels[model.persistentModelID] == nil { deletedModels[model.persistentModelID] = model }
@@ -632,6 +670,7 @@ public final class ModelContext: @unchecked Sendable {
             identityMap.removeValue(forKey: id)
             insertedModels.removeValue(forKey: id)
             changedModels.removeValue(forKey: id)
+            changedProperties.removeValue(forKey: id)
             deletedModels[id] = model
             return false
         }

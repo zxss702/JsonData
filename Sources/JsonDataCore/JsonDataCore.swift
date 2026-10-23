@@ -300,7 +300,9 @@ public struct Field<Value> {
                 instance[keyPath: storageKeyPath].value = newValue
                 
                 if !instance._isFaulting {
-                    instance._modelContext?._modelDidChange(instance)
+                    let propertyName = (type(of: instance) as? any _JsonDataSchemaProviding.Type)?
+                        ._jsonDataPropertyName(for: wrappedKeyPath)
+                    instance._modelContext?._modelDidChange(instance, propertyName: propertyName)
                     
                     if let ctx = instance._modelContext {
                         // 必须走完整的 ctx.insert 以触发 _processCascadeInsert：

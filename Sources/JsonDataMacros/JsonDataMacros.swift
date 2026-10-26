@@ -814,8 +814,16 @@ private struct PredicateClosureParser {
             try parseExpr(first.expression)
             sql += ")"
         } else if let infix = expr.as(InfixOperatorExprSyntax.self) {
-            // 检测嵌套 keyPath：如 $0.subAgent?.callID == xxx
-            if let components = collectKeyPathComponents(infix.leftOperand), components.count > 1 {
+            let components = collectKeyPathComponents(infix.leftOperand)
+            let comparesRelationshipID = components?.count == 2 && components?.last == "persistentModelID"
+            // A to-one relationship already stores its destination's persistent ID.
+            // Compare that local column directly, including implicit relationships
+            // without @Relationship metadata. Keep it inside the original Boolean
+            // expression so OR, NOT, and nil comparisons retain their semantics.
+            // Other destination properties still require a related-table query.
+            if let components,
+               components.count > 1,
+               !comparesRelationshipID {
                 sql += "("
                 sql += "1=1"
                 let op = infix.operator.trimmedDescription
@@ -842,8 +850,8 @@ private struct PredicateClosureParser {
             
             let op = infix.operator.trimmedDescription
             switch op {
-            case "==": sql += isNilOperand ? "IS" : "="
-            case "!=": sql += isNilOperand ? "IS NOT" : "!="
+            case "==": sql += isNilOperand || comparesRelationshipID ? "IS" : "="
+            case "!=": sql += isNilOperand || comparesRelationshipID ? "IS NOT" : "!="
             case "<", ">", "<=", ">=": sql += op
             case "&&": sql += "AND"
             case "||": sql += "OR"

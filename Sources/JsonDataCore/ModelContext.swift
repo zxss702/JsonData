@@ -5,9 +5,10 @@ import Synchronization
 import GRDB
 
 /// JsonData 存储层错误。
-public enum JsonDataStoreError: Error, LocalizedError, Sendable {
+public enum JsonDataStoreError: Error, LocalizedError, CustomNSError, Sendable {
     case databaseIntegrityFailed(String)
     case databaseOpenFailed(underlying: Error)
+    case schemaMigrationFailed(model: String, underlying: Error)
 
     public var errorDescription: String? {
         switch self {
@@ -15,7 +16,26 @@ public enum JsonDataStoreError: Error, LocalizedError, Sendable {
             return "Database integrity check failed: \(message)"
         case .databaseOpenFailed(let underlying):
             return "Failed to open database: \(underlying.localizedDescription)"
+        case .schemaMigrationFailed(let model, let underlying):
+            return "Failed to migrate model \(model): \(underlying.localizedDescription)"
         }
+    }
+    public static var errorDomain: String { "JsonData.Store" }
+    public var errorCode: Int {
+        switch self {
+        case .databaseIntegrityFailed: return 1
+        case .databaseOpenFailed: return 2
+        case .schemaMigrationFailed: return 3
+        }
+    }
+    public var errorUserInfo: [String: Any] {
+        var info: [String: Any] = [NSLocalizedDescriptionKey: errorDescription ?? "Database error"]
+        switch self {
+        case .databaseIntegrityFailed: break
+        case .databaseOpenFailed(let error), .schemaMigrationFailed(_, let error):
+            info[NSUnderlyingErrorKey] = error
+        }
+        return info
     }
 }
 
@@ -171,12 +191,7 @@ public final class ModelContext: @unchecked Sendable {
                 } catch {
                     // 保存失败必须留下痕迹：自动保存的错误过去被吞掉了，
                     // 于是数据没写进去也没有任何地方说得出为什么。
-                    self.autosaveFailureLock.withLock { _ in self.autosaveFailure = error }
-                    NotificationCenter.default.post(
-                        name: ModelContext.autosaveDidFail,
-                        object: self,
-                        userInfo: ["error": error]
-                    )
+                    self._reportAutosaveFailure(error)
                 }
                 let keepsSaving = self.autosaveLock.withLock { _ -> Bool in
                     if self.autosaveDirty { return true }
@@ -301,13 +316,16 @@ public final class ModelContext: @unchecked Sendable {
             try save()
             autosaveFailureLock.withLock { _ in autosaveFailure = nil }
         } catch {
-            autosaveFailureLock.withLock { _ in autosaveFailure = error }
-            NotificationCenter.default.post(
-                name: ModelContext.autosaveDidFail,
-                object: self,
-                userInfo: ["error": error]
-            )
+            _reportAutosaveFailure(error)
         }
+    }
+
+    private func _reportAutosaveFailure(_ error: Error) {
+        autosaveFailureLock.withLock { _ in autosaveFailure = error }
+        let message = "[JsonData] Automatic save failed: \(error.localizedDescription)\n"
+        try? FileHandle.standardError.write(contentsOf: Data(message.utf8))
+        NotificationCenter.default.post(
+            name: ModelContext.autosaveDidFail, object: self, userInfo: ["error": error])
     }
 
     // @contributor
@@ -339,99 +357,36 @@ public final class ModelContext: @unchecked Sendable {
     
     /// 根据给定的模型类型列表初始化数据库表结构。此方法供内部使用。
     public func _bootstrapSchema(_ schema: [any PersistentModel.Type]) throws {
-        schemaTypes = schema
         try databaseQueue.write { db in
             for modelType in schema {
                 try self._ensureTable(for: modelType, in: db)
             }
         }
+        schemaTypes = schema
     }
 
     // @contributor
     private func _ensureTable(for type: any PersistentModel.Type, in db: Database? = nil) throws {
         let tableName = _tableName(for: type)
-        
-        let alreadyInit = tableInitLock.withLock { _ -> Bool in
-            if initializedTables.contains(tableName) { return true }
-            initializedTables.insert(tableName)
-            return false
-        }
-        
-        if alreadyInit { return }
-        
-        let columns = _columns(for: type)
-        
-        let definitions = ["_id TEXT PRIMARY KEY NOT NULL"] + columns.map { column in
-            let sqlType = _sqlType(for: column.kind)
-            let nullability = column.isOptional ? "" : " NOT NULL"
-            let unique = column.options.contains(.unique) ? " UNIQUE" : ""
-            return "\(_quote(identifier: column.columnName)) \(sqlType)\(nullability)\(unique)"
-        }
-        let sql = "CREATE TABLE IF NOT EXISTS \(_quote(identifier: tableName)) (\(definitions.joined(separator: ", ")) )"
-        
+        if tableInitLock.withLock({ _ in initializedTables.contains(tableName) }) { return }
+        let migrator = ModelSchemaMigrator(modelType: type, tableName: tableName, columns: _columns(for: type))
         let performMigration: (Database) throws -> Void = { db in
-            try db.execute(sql: sql)
-            let existingColumns = try db.columns(in: tableName).map { $0.name }
-            for column in columns {
-                if !existingColumns.contains(column.columnName) {
-                    let sqlType = self._sqlType(for: column.kind)
-                    let defaultVal = column.isOptional ? "" : " DEFAULT \(self._sqlDefault(for: column.kind))"
-                    let nullability = column.isOptional ? "" : " NOT NULL"
-                    let alterSQL = "ALTER TABLE \(self._quote(identifier: tableName)) ADD COLUMN \(self._quote(identifier: column.columnName)) \(sqlType)\(nullability)\(defaultVal)"
-                    try db.execute(sql: alterSQL)
-                }
+            do {
+                try migrator.migrate(in: db)
+            } catch {
+                throw JsonDataStoreError.schemaMigrationFailed(model: tableName, underlying: error)
             }
-            
-            if let schemaType = type as? any _JsonDataSchemaProviding.Type {
-                for index in schemaType._jsonDataIndexes {
-                    let indexName = "idx_\(tableName)_\(index.properties.joined(separator: "_"))"
-                    let cols = index.properties.map(self._quote(identifier:)).joined(separator: ", ")
-                    try db.execute(sql: "CREATE INDEX IF NOT EXISTS \(self._quote(identifier: indexName)) ON \(self._quote(identifier: tableName)) (\(cols))")
-                }
-                
-                for unique in schemaType._jsonDataUniques {
-                    let indexName = "idx_uniq_\(tableName)_\(unique.properties.joined(separator: "_"))"
-                    let cols = unique.properties.map(self._quote(identifier:)).joined(separator: ", ")
-                    try db.execute(sql: "CREATE UNIQUE INDEX IF NOT EXISTS \(self._quote(identifier: indexName)) ON \(self._quote(identifier: tableName)) (\(cols))")
-                }
+            // Cache only committed schemas. A later table or write can still
+            // fail, rolling back every migration in the enclosing transaction.
+            db.afterNextTransaction { [weak self] _ in
+                guard let self else { return }
+                _ = self.tableInitLock.withLock { _ in self.initializedTables.insert(tableName) }
             }
         }
-
         if let db {
             try performMigration(db)
         } else {
             try databaseQueue.write { try performMigration($0) }
-        }
-        
-        _ = tableInitLock.withLock { _ in
-            initializedTables.insert(tableName)
-        }
-    }
-
-    // @contributor
-    private func _sqlType(for kind: _JsonDataColumnKind) -> String {
-        switch kind {
-        case .string, .uuid, .codableJSON, .url: return "TEXT"
-        case .integer, .bool:
-            return "INTEGER"
-        case .double, .date:
-            return "REAL"
-        case .data:
-            return "BLOB"
-        }
-    }
-
-    // @contributor
-    private func _sqlDefault(for kind: _JsonDataColumnKind) -> String {
-        switch kind {
-        case .string, .uuid, .codableJSON, .url:
-            return "''"
-        case .integer, .bool:
-            return "0"
-        case .double, .date:
-            return "0.0"
-        case .data:
-            return "x''"
         }
     }
 
@@ -480,7 +435,7 @@ public final class ModelContext: @unchecked Sendable {
             let rawValue = columnValues[column.propertyName] ?? nil
             arguments.append(_databaseArgument(for: rawValue))
         }
-        
+
         let sql = "INSERT OR REPLACE INTO \(_quote(identifier: tableName)) (\(columns.map(_quote(identifier:)).joined(separator: ", "))) VALUES (\(placeholders.joined(separator: ", ")))"
         let updateArguments = StatementArguments(arguments)
         try db.execute(sql: sql, arguments: updateArguments)
@@ -834,10 +789,11 @@ public final class ModelContext: @unchecked Sendable {
         _ descriptor: FetchDescriptor<T> = FetchDescriptor<T>()
     ) -> ValueObservation<ValueReducers.Fetch<UncheckedSendableArray<T>>> {
         let tableName = _tableName(for: T.self)
-        try? _ensureTable(for: T.self)
+        let preparation = Result { try _ensureTable(for: T.self) }
         let effectiveLimit = descriptor.fetchLimit
         
         return ValueObservation.tracking { db in
+            try preparation.get()
             let query = try self._buildFetchQuery(for: T.self, descriptor: descriptor, limit: effectiveLimit, tableName: tableName)
             let rows = try Row.fetchAll(db, sql: query.sql, arguments: query.arguments)
             let cols = self._columns(for: T.self)
@@ -920,10 +876,11 @@ public final class ModelContext: @unchecked Sendable {
         _ descriptor: FetchDescriptor<T> = FetchDescriptor<T>()
     ) -> ValueObservation<ValueReducers.Fetch<UncheckedSendableArray<PersistentIdentifier>>> {
         let tableName = _tableName(for: T.self)
-        try? _ensureTable(for: T.self)
+        let preparation = Result { try _ensureTable(for: T.self) }
         let effectiveLimit = descriptor.fetchLimit
 
         return ValueObservation.tracking { db in
+            try preparation.get()
             let query = try self._buildIdentifierFetchQuery(
                 for: T.self,
                 descriptor: descriptor,
@@ -982,8 +939,9 @@ public final class ModelContext: @unchecked Sendable {
         _ descriptor: FetchDescriptor<T>
     ) -> ValueObservation<ValueReducers.Fetch<ObservedSnapshot>> {
         let tableName = _tableName(for: T.self)
-        try? _ensureTable(for: T.self)
+        let preparation = Result { try _ensureTable(for: T.self) }
         return ValueObservation.tracking { db in
+            try preparation.get()
             let query = try self._buildFetchQuery(
                 for: T.self, descriptor: descriptor, limit: descriptor.fetchLimit, tableName: tableName)
             let rows = try Row.fetchAll(db, sql: query.sql, arguments: query.arguments)

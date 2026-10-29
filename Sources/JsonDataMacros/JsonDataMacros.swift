@@ -416,7 +416,7 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                         if let d = data as Any as? Data {
                             encodedData = d
                         } else {
-                            encodedData = try? JSONEncoder().encode(data)
+                            encodedData = try JSONEncoder().encode(data)
                         }
                         if let encodedData = encodedData, let context = context {
                             let ref = try context._saveExternalData(encodedData, modelID: self.persistentModelID, propertyName: "\(name)")
@@ -440,7 +440,7 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                 default:
                     return """
                     if let v = \(valExpr) {
-                        if let jsonText = try? _jsonDataEncode(v) {
+                        if let jsonText = try _jsonDataEncode(v) {
                             values["\(name)"] = jsonText
                         }
                     }
@@ -632,6 +632,12 @@ public struct ModelMacro: ExtensionMacro, MemberAttributeMacro, MemberMacro {
                             //（SQLite error 19），且用户 init 的默认参数调用如 Model()
                             // 会被精确匹配的 init() 拦截，必须保证其结果合法。
                             initBody += "self._\(variable.name) = Field<\(variable.type)>(wrappedValue: \(initExpr))\n"
+                        } else if variable.relationshipInfo != nil, !variable.isOptional,
+                                  variable.baseType.hasPrefix("["), variable.baseType.hasSuffix("]"),
+                                  !variable.baseType.contains(":") {
+                            // SwiftData to-many relationships start empty, including
+                            // when a migration adds one to an existing model.
+                            initBody += "self._\(variable.name) = Field<\(variable.type)>(wrappedValue: [])\n"
                         } else {
                             initBody += "self._\(variable.name) = Field<\(variable.type)>()\n"
                         }
